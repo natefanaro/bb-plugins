@@ -1,0 +1,82 @@
+// Wire contract shared by server.ts (RPC handlers) and app.tsx (panel). The panel reads; its one control is Turbo.
+import { defineRpcContract } from "@get-bb/plugin-sdk";
+import { z } from "zod";
+
+const pace = z.object({
+  used: z.number().nullable(),
+  elapsed: z.number().nullable(),
+  state: z.enum(["ahead", "behind", "unknown"]),
+});
+
+export const turboViewSchema = z.object({
+  active: z.boolean(),
+  limit: z.number().nullable(),
+  /** ISO time the time box ends. Null when Turbo is off. */
+  until: z.string().nullable(),
+  startedBy: z.enum(["cli", "panel"]).nullable(),
+  /** Offer Turbo: weekly use is behind pace with three hours or less to the reset. Only when Turbo is off. */
+  suggested: z.boolean(),
+});
+
+export const panelSchema = z.object({
+  generatedAt: z.number(),
+  host: z.string().nullable(),
+  /** Set when the limit plugin could not be read; the other fields are then best-effort. */
+  error: z.string().nullable(),
+  limit: z.object({
+    current: z.number().nullable(),
+    min: z.number(),
+    max: z.number(),
+    globalLimit: z.number().nullable(),
+  }),
+  threads: z.object({
+    /** Threads occupying a slot now: starting or active, hidden included (bb.sdk.threads.listRunning). Not capped. */
+    running: z.number().nullable(),
+    /** Queued messages held by the concurrency limit that are still waiting or retrying for a slot. */
+    queued: z.number().nullable(),
+    /** Queued messages held by the limit that failed after their retries ran out. Not waiting; shown so they are not hidden. */
+    gaveUp: z.number().nullable(),
+  }),
+  why: z.object({
+    /** The reason of the newest logged decision, as a sentence. While Turbo is on, its sentence; a manual-change back-off replaces it while it lasts. */
+    sentence: z.string(),
+    /** When that decision was made (ISO time). Null when nothing is logged yet. */
+    decidedAt: z.string().nullable(),
+    backingOff: z.boolean(),
+    backOffMinutesLeft: z.number(),
+  }),
+  turbo: turboViewSchema,
+  inputs: z.object({
+    load: z.object({ ratio: z.number().nullable(), level: z.enum(["idle", "ok", "hot"]).nullable() }),
+    memory: z.object({ swapUsedPct: z.number().nullable(), freePct: z.number().nullable(), pageoutsPerSec: z.number().nullable(), hot: z.boolean(), swapHotPercent: z.number(), memFreeMinPercent: z.number() }),
+    fiveHour: pace,
+    week: pace,
+  }),
+  history: z.object({
+    windowSec: z.number(),
+    points: z.array(z.object({ ageSec: z.number(), limit: z.number() })),
+    changes: z.array(z.object({ ageSec: z.number(), from: z.number(), to: z.number(), why: z.string() })),
+  }),
+  topCpu: z.object({ name: z.string(), cpuPct: z.number() }).nullable(),
+});
+
+export type PanelView = z.infer<typeof panelSchema>;
+export type TurboView = z.infer<typeof turboViewSchema>;
+
+export const pacerRpcContract = defineRpcContract({
+  panel: {
+    input: z.null(),
+    output: panelSchema,
+  },
+  turboStart: {
+    input: z.object({
+      limit: z.number().int().min(1).max(16).nullable(),
+      minutes: z.number().int().min(1).max(720).nullable(),
+    }).strict(),
+    output: turboViewSchema,
+  },
+  turboStop: {
+    input: z.null(),
+    output: turboViewSchema,
+  },
+});
