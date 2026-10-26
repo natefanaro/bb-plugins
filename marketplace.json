@@ -11,7 +11,7 @@
       "description": "Raises and lowers the host thread limit every five minutes from CPU load, memory pressure and Claude plan quota pace.",
       "tags": ["concurrency", "quota"],
       "author": {
-        "name": "Concurrency Pacer contributors"
+        "name": "Nate Fanaro"
       },
       "source": {
         "git": {
