@@ -2,7 +2,7 @@
 // They check the order of the tick (end Turbo, then write nothing), status never writing, and the manual-change back-off surviving a reload.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createExecutor, type Deps, type PacerSettings } from "./executor.ts";
+import { createExecutor, type Deps, type CoachSettings } from "./executor.ts";
 import type { LogLine } from "./decision-log.ts";
 import type { LimitCfg } from "./io.ts";
 import type { MemoryReading } from "./memory.ts";
@@ -23,7 +23,7 @@ interface World {
   logs: LogLine[];
   warns: string[];
   store: Map<string, unknown>;
-  settings: PacerSettings;
+  settings: CoachSettings;
 }
 
 function world(over: Partial<World> = {}): World {
@@ -52,7 +52,7 @@ function cfg(w: World): LimitCfg {
   };
 }
 
-/** The deps a Pacer process would have. Passing the same `w` (and so the same store) to a new executor is a reload. */
+/** The deps a Coach process would have. Passing the same `w` (and so the same store) to a new executor is a reload. */
 function deps(w: World): Deps {
   return {
     settings: async () => w.settings,
@@ -118,7 +118,7 @@ test("manual change, then reload: the back-off holds across the reload and ends 
   await first.tick(true); // writes 5 (the rule): lastSet 5, persisted
   assert.deepEqual(w.writes, [5]);
 
-  // the operator sets the limit by hand to 2, while Pacer is still running.
+  // the operator sets the limit by hand to 2, while Coach is still running.
   w.limit = 2;
   w.now += 5 * MIN;
   await first.tick(true);

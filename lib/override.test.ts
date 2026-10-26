@@ -25,7 +25,7 @@ test("a restart with a manual limit does not overwrite it on the first tick", ()
   assert.equal(g.state.lastSet, 1);
 });
 
-test("limit still matching what Pacer last set applies", () => {
+test("limit still matching what Coach last set applies", () => {
   const s: OverrideState = { lastSet: 5, pausedUntil: 0 };
   assert.equal(gate(s, 5, T0, WINDOW).apply, true);
 });
@@ -46,7 +46,7 @@ test("during the window, ticks do not write even if the limit matches", () => {
   assert.deepEqual(g.state, paused);
 });
 
-test("after the window, Pacer resumes writing from the manual value", () => {
+test("after the window, Coach resumes writing from the manual value", () => {
   const paused: OverrideState = { lastSet: 1, pausedUntil: T0 + WINDOW };
   const g = gate(paused, 1, T0 + WINDOW, WINDOW);
   assert.equal(g.apply, true);
@@ -94,7 +94,7 @@ test("no read-back in the response falls back to the requested value", () => {
 });
 
 test("a clamped write does not start a back-off on the next tick", () => {
-  // Pacer wrote 5, the host landed at 4 and recorded 4 as the baseline. The next tick reads 4.
+  // Coach wrote 5, the host landed at 4 and recorded 4 as the baseline. The next tick reads 4.
   const landed: OverrideState = { lastSet: baselineAfterWrite(5, 4), pausedUntil: 0 };
   const next = gate(landed, 4, T0 + 5 * MIN, WINDOW);
   assert.equal(next.apply, true);

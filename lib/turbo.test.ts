@@ -72,11 +72,11 @@ test("a manual limit change ends Turbo, and the cap and quota reasons come first
 });
 
 test("manual lower during Turbo: the step is manual, so Turbo ends and nothing is written", () => {
-  // Turbo holds 6; someone sets the limit to 2 by hand (cur 2, last set by Pacer 6).
+  // Turbo holds 6; someone sets the limit to 2 by hand (cur 2, last set by Coach 6).
   assert.deepEqual(turboStep(6, 2, 6), { kind: "manual" });
 });
 
-test("Turbo's own write does not count as manual: after it lands, cur equals the value Pacer last set", () => {
+test("Turbo's own write does not count as manual: after it lands, cur equals the value Coach last set", () => {
   // Turbo wrote 6 and the host landed at 6.
   assert.deepEqual(turboStep(6, 6, 6), { kind: "hold" });
   // Turbo wrote 6, the host landed at 5 (a cap): the landed value is the baseline, so this is not manual and Turbo keeps trying.

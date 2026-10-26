@@ -1,4 +1,4 @@
-# Concurrency Pacer
+# Concurrency Coach
 
 Raises and lowers the host thread limit every 5 minutes, one step at a time, between a min and max you set. It reads CPU load and Claude plan quota pace. It makes no model calls.
 
@@ -16,7 +16,7 @@ Every 5 minutes it reads two signals and applies one of these rules:
 | CPU idle | 1-minute load below 50% of the core count | Step up, unless a weekly rule holds it |
 | Otherwise | | Hold |
 
-The limit never leaves `[minLimit, maxLimit]`. If the quota can't be read, Concurrency Pacer scales on CPU alone. Memory is read from the Mac's `memory_pressure` (free memory), `sysctl vm.swapusage` (swap), and `vm_stat -c 2 5` (paging, a five-second sample; this adds about five seconds to a tick). A reading that fails is not a signal, and the rest still applies.
+The limit never leaves `[minLimit, maxLimit]`. If the quota can't be read, Concurrency Coach scales on CPU alone. Memory is read from the Mac's `memory_pressure` (free memory), `sysctl vm.swapusage` (swap), and `vm_stat -c 2 5` (paging, a five-second sample; this adds about five seconds to a tick). A reading that fails is not a signal, and the rest still applies.
 
 Free memory is the primary signal. Swap alone is not pressure: macOS keeps swap after a spike and does not give it back, so a host can sit at 95% swap with plenty of free memory and no paging. Swap counts only while the host is also paging out. Page-ins are not counted, because a healthy Mac pages in at several hundred per second.
 
@@ -37,49 +37,49 @@ The effective raise gate is therefore 3 points above elapsed, not 0. Weekly use 
 
 Every weekly reason in the decision log gives used percent, elapsed percent and projected percent by reset, for example `burning ahead of weekly pace (21% used, 8% elapsed, projected 263% by reset)`.
 
-Concurrency Pacer reads the host's limit through the built-in `concurrency-limit` plugin (`getConfiguration` / `setConfiguration`) and quota through `bb--provider-usage` `getUsage`. It parses Claude Code windows labelled like `Five-hour limit` or `session` (five-hour) and `Weekly limit` (weekly).
+Concurrency Coach reads the host's limit through the built-in `concurrency-limit` plugin (`getConfiguration` / `setConfiguration`) and quota through `bb--provider-usage` `getUsage`. It parses Claude Code windows labelled like `Five-hour limit` or `session` (five-hour) and `Weekly limit` (weekly).
 
 When it applies a change, it also raises the global cap if the global cap would otherwise sit below the new host limit. Other hosts' overrides are kept.
 
 ## Requirements
 
-- The built-in `concurrency-limit` plugin must be **enabled**. If it is disabled, every Concurrency Pacer run fails.
+- The built-in `concurrency-limit` plugin must be **enabled**. If it is disabled, every Concurrency Coach run fails.
 
 ## Settings
 
-Set these with `bb plugin config concurrency-pacer`.
+Set these with `bb plugin config concurrency-coach`.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Adjust the limit automatically. When false, the 5-minute job does nothing. |
 | `host` | blank | Host name to govern. Blank means the only connected host. Errors if more than one is connected. |
-| `minLimit` | `2` | Lowest limit Concurrency Pacer will set. |
-| `maxLimit` | `8` | Highest limit Concurrency Pacer will set. |
+| `minLimit` | `2` | Lowest limit Concurrency Coach will set. |
+| `maxLimit` | `8` | Highest limit Concurrency Coach will set. |
 | `overrideBackoffMinutes` | `120` | After a manual limit change, stop writing for this many minutes. `0` resumes on the next tick. |
 | `swapHotPercent` | `70` | Swap used (percent of the swap total) at or above which memory counts as pressure. |
 | `memFreeMinPercent` | `15` | System-wide free memory (percent) below which memory counts as pressure. |
 
 ## Manual changes
 
-If the host limit no longer matches the value Concurrency Pacer last set, someone changed it by hand. It records the change in its status reason, does not write for `overrideBackoffMinutes`, and then resumes from the manual value. `status` shows the back-off while it lasts.
+If the host limit no longer matches the value Concurrency Coach last set, someone changed it by hand. It records the change in its status reason, does not write for `overrideBackoffMinutes`, and then resumes from the manual value. `status` shows the back-off while it lasts.
 
-The last-set value and the back-off end are kept in plugin storage, so a reload or restart does not clear an active back-off. With no stored state (the first run), the first tick records the current limit as the baseline and does not write. Otherwise the first tick after a restart compares the limit with the stored last value, so a change made while Pacer was down backs off.
+The last-set value and the back-off end are kept in plugin storage, so a reload or restart does not clear an active back-off. With no stored state (the first run), the first tick records the current limit as the baseline and does not write. Otherwise the first tick after a restart compares the limit with the stored last value, so a change made while Coach was down backs off.
 
-After a write, the baseline is the limit the host reports back, not the one Pacer asked for. If a global cap or clamp lands the host elsewhere, that is not read as a manual change.
+After a write, the baseline is the limit the host reports back, not the one Coach asked for. If a global cap or clamp lands the host elsewhere, that is not read as a manual change.
 
 ## Commands
 
-- `bb concurrency-pacer status [--json]`: show what Concurrency Pacer would do now. Changes nothing.
-- `bb concurrency-pacer tick`: run one adjustment now and apply it.
-- `bb concurrency-pacer log [--last N]`: show the most recent logged decisions and Turbo events (default 20), oldest first.
-- `bb concurrency-pacer turbo [--limit N] [--for 2h]`: turn Turbo on. The limit is written now. Defaults: `maxLimit` for 2 h.
-- `bb concurrency-pacer turbo off`: turn Turbo off.
+- `bb concurrency-coach status [--json]`: show what Concurrency Coach would do now. Changes nothing.
+- `bb concurrency-coach tick`: run one adjustment now and apply it.
+- `bb concurrency-coach log [--last N]`: show the most recent logged decisions and Turbo events (default 20), oldest first.
+- `bb concurrency-coach turbo [--limit N] [--for 2h]`: turn Turbo on. The limit is written now. Defaults: `maxLimit` for 2 h.
+- `bb concurrency-coach turbo off`: turn Turbo off.
 
 ## Turbo
 
 Turbo holds a chosen limit for a time box, for example to use quota that would otherwise expire unused at the weekly reset.
 
-- `bb concurrency-pacer turbo [--limit N] [--for 2h]` turns it on. The limit is written at once. Defaults: `maxLimit` for 2 h. `bb concurrency-pacer turbo off` turns it off.
+- `bb concurrency-coach turbo [--limit N] [--for 2h]` turns it on. The limit is written at once. Defaults: `maxLimit` for 2 h. `bb concurrency-coach turbo off` turns it off.
 - While Turbo is on, the limit is held at its value. The CPU-hot rule does not apply, and Turbo's own writes do not start the manual back-off.
 - **A manual limit change ends Turbo.** Turbo does not write over it. The change then backs off as usual (see Manual changes).
 - Turbo also ends at the weekly quota reset, when the quota nears its cap (week at 90% or five-hour at 92%, and the limit drops to `minLimit`), or when the time box runs out. The end is checked on each scheduled tick, so it can be up to five minutes late.
@@ -96,7 +96,7 @@ Every applied tick (scheduled or from `tick`) appends one JSON line to `~/.bb-st
 
 ## Panel
 
-The **Concurrency Pacer** page in the rail is read-only. It shows the current limit and range, the overall cap, running and queued threads, a plain-sentence reason (with minutes left if backing off), CPU load per core against the 0.5 and 0.85 thresholds, free memory, swap and paging against their thresholds, the 5-hour and weekly quota used against time elapsed, a 24-hour strip of the limit with each change marked (hover for its reason), and the top process by CPU name.
+The **Concurrency Coach** page in the rail is read-only. It shows the current limit and range, the overall cap, running and queued threads, a plain-sentence reason (with minutes left if backing off), CPU load per core against the 0.5 and 0.85 thresholds, free memory, swap and paging against their thresholds, the 5-hour and weekly quota used against time elapsed, a 24-hour strip of the limit with each change marked (hover for its reason), and the top process by CPU name.
 
 - Running is threads occupying a slot now (starting or active, hidden included), counted without a cap. Queued is queued messages that the concurrency limit is holding and still waiting or retrying; messages that gave up are shown separately as "failed after retries".
 - "Last decision" is the newest logged decision and when it was made. It can be older than the live load; the inputs section shows the live load.
@@ -105,7 +105,7 @@ The **Concurrency Pacer** page in the rail is read-only. It shows the current li
 
 ## Turning it off
 
-Set `enabled` to `false`. The scheduled job then skips every run and you control the limit by hand with `bb concurrency-limit`. While `enabled` is on, Concurrency Pacer writes its own limit on each tick, but backs off after a manual change (see above).
+Set `enabled` to `false`. The scheduled job then skips every run and you control the limit by hand with `bb concurrency-limit`. While `enabled` is on, Concurrency Coach writes its own limit on each tick, but backs off after a manual change (see above).
 
 ## Development
 

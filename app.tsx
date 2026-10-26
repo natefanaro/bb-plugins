@@ -1,10 +1,10 @@
-// bb-plugin-concurrency-pacer — read-only panel. Compiled by `bb plugin build` into dist/app.js + dist/app.css.
+// bb-plugin-concurrency-coach — read-only panel. Compiled by `bb plugin build` into dist/app.js + dist/app.css.
 // React and @get-bb/plugin-sdk/app come from the BB app at load time. Colours come from the host theme tokens, so light and dark both follow the app.
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PanelView } from "./lib/contract.ts";
 import { paceTone } from "./lib/pace.ts";
-import type { pacerRpcContract } from "./lib/contract.ts";
+import type { coachRpcContract } from "./lib/contract.ts";
 
 /** The panel refreshes at most every five minutes (the scheduler tick), plus the Refresh link. */
 const REFRESH_MS = 5 * 60_000;
@@ -12,7 +12,7 @@ const REFRESH_MS = 5 * 60_000;
 const COUNTDOWN_MS = 15_000;
 
 function usePanel() {
-  const rpc = useRpc<typeof pacerRpcContract>();
+  const rpc = useRpc<typeof coachRpcContract>();
   const [view, setView] = useState<PanelView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(() => {
@@ -109,7 +109,7 @@ function HistoryStrip({ view }: { view: PanelView }) {
 
 /** The one control on the panel: Turbo on or off. Shows the countdown while it runs, and the suggestion when weekly quota is behind pace near the reset. */
 function TurboControl({ view, onChanged }: { view: PanelView; onChanged: () => void }) {
-  const rpc = useRpc<typeof pacerRpcContract>();
+  const rpc = useRpc<typeof coachRpcContract>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -161,7 +161,7 @@ function TurboControl({ view, onChanged }: { view: PanelView; onChanged: () => v
   );
 }
 
-function ConcurrencyPacerPage() {
+function ConcurrencyCoachPage() {
   const { view, error, refresh } = usePanel();
   // The scroll container is the same one the other plugin pages use. Without it the page did not scroll on mobile.
   if (error !== null) return <div className="h-full min-h-0 flex-1 overflow-y-auto p-4 text-sm">Could not read the panel: {error}</div>;
@@ -262,7 +262,7 @@ function ConcurrencyPacerPage() {
 /** The small window above the sidebar footer: the limit as a number, coloured by pace. Read-only; it fetches when opened. */
 function PaceWindow() {
   const { view, error } = usePanel();
-  if (error !== null) return <div className="p-3 text-xs text-destructive">Pacer unavailable: {error}</div>;
+  if (error !== null) return <div className="p-3 text-xs text-destructive">Coach unavailable: {error}</div>;
   if (view === null) return <div className="p-3 text-xs text-muted-foreground">Loading…</div>;
   const { tone, label } = paceTone(view.inputs);
   const colour = tone === "ahead" ? "text-destructive" : tone === "within" ? "text-primary" : "text-muted-foreground";
@@ -282,16 +282,16 @@ function PaceWindow() {
 export default definePluginApp((app) => {
   app.experimental_sidebarFooter.register({
     kind: "disclosure",
-    id: "concurrency-pacer-pace",
-    label: "Concurrency Pacer pace",
-    icon: "Gauge",
+    id: "concurrency-coach-pace",
+    label: "Concurrency Coach pace",
+    icon: "concurrency-coach/coach",
     component: PaceWindow,
   });
   app.slots.navPanel({
-    id: "concurrency-pacer",
-    title: "Concurrency Pacer",
-    icon: "Gauge",
-    path: "concurrency-pacer",
-    component: ConcurrencyPacerPage,
+    id: "concurrency-coach",
+    title: "Concurrency Coach",
+    icon: "concurrency-coach/coach",
+    path: "concurrency-coach",
+    component: ConcurrencyCoachPage,
   });
 });

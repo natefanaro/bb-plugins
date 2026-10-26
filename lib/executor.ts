@@ -10,7 +10,7 @@ import {
   parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboSentence, turboStep, TURBO_DEFAULT_MS, type Turbo,
 } from "./turbo.ts";
 
-export interface PacerSettings {
+export interface CoachSettings {
   enabled: boolean;
   host: string;
   minLimit: number;
@@ -21,7 +21,7 @@ export interface PacerSettings {
 }
 
 export interface Deps {
-  settings(): Promise<PacerSettings>;
+  settings(): Promise<CoachSettings>;
   limits: {
     get(): Promise<LimitCfg>;
     set(cfg: LimitCfg, hostId: string, limit: number): Promise<LimitCfg>;

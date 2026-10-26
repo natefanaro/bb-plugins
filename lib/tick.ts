@@ -11,7 +11,7 @@ export interface PlanInput {
   turbo: Turbo | null;
   /** Why Turbo should end now (from turboEndReason), or null while it runs. */
   endReason: string | null;
-  /** The value Pacer last set, or null before its first write. */
+  /** The value Coach last set, or null before its first write. */
   lastSet: number | null;
   decision: Decision;
   gate: Gate;

@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-concurrency-pacer",
+  "name": "bb-plugin-concurrency-coach",
   "version": "0.1.0",
   "type": "module",
   "engines": {
@@ -7,10 +7,13 @@
     "bbPluginSdk": ">=0.6.15"
   },
   "bb": {
-    "name": "Concurrency Pacer",
+    "name": "Concurrency Coach",
     "description": "Raises and lowers the host thread limit every 5 minutes from CPU load and Claude plan quota pace, within a min and max you set. No model calls.",
     "branding": {
-      "icon": "Gauge"
+      "icon": "./icons/coach.svg",
+      "experimental_icons": {
+        "coach": "./icons/coach.svg"
+      }
     },
     "server": "./server.ts",
     "app": "./app.tsx",
