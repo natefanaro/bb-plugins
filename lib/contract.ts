@@ -5,6 +5,8 @@ import { z } from "zod";
 const pace = z.object({
   used: z.number().nullable(),
   elapsed: z.number().nullable(),
+  /** Used, projected to the window's reset at the current rate, in percent. Null without a usable elapsed share. */
+  projected: z.number().nullable(),
   state: z.enum(["ahead", "behind", "unknown"]),
 });
 
@@ -44,6 +46,16 @@ export const panelSchema = z.object({
     decidedAt: z.string().nullable(),
     backingOff: z.boolean(),
     backOffMinutesLeft: z.number(),
+    /** The readings the last decision used, for the Coach window. Null when nothing is logged yet. */
+    detail: z.object({
+      applied: z.boolean(),
+      cur: z.number(),
+      next: z.number(),
+      load: z.number().nullable(),
+      fiveHour: z.object({ used: z.number().nullable(), elapsed: z.number().nullable() }),
+      week: z.object({ used: z.number().nullable(), elapsed: z.number().nullable() }),
+      memory: z.object({ swapUsedPct: z.number().nullable(), freePct: z.number().nullable(), pageoutsPerSec: z.number().nullable() }).nullable(),
+    }).nullable(),
   }),
   turbo: turboViewSchema,
   inputs: z.object({

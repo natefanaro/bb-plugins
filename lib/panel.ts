@@ -1,36 +1,37 @@
 // Data shaping for the read-only panel. Pure: the server gathers the inputs, these functions turn them into what the page shows.
 import path from "node:path";
-import { HOT, IDLE, PACE_SLACK_PTS, WEEK_MIN_ELAPSED, WEEK_SLACK_PTS } from "./policy.ts";
+import { WEEK_MIN_ELAPSED } from "./policy.ts";
+import { DEFAULT_TUNING, type Tuning } from "./tuning.ts";
 import { isTick, type DecisionRecord, type LogLine } from "./decision-log.ts";
 
 export type LoadLevel = "idle" | "ok" | "hot";
 export type PaceState = "ahead" | "behind" | "unknown";
 
-export function loadLevel(ratio: number): LoadLevel {
-  return ratio > HOT ? "hot" : ratio < IDLE ? "idle" : "ok";
+export function loadLevel(ratio: number, t: Pick<Tuning, "hotLoad" | "idleLoad"> = DEFAULT_TUNING): LoadLevel {
+  return ratio > t.hotLoad ? "hot" : ratio < t.idleLoad ? "idle" : "ok";
 }
 
 /** Used vs elapsed for one quota window. Ahead means used runs more than the slack above elapsed; unknown when either figure is missing. */
-export function paceState(used: number | null, elapsed: number | null, slack: number = PACE_SLACK_PTS): PaceState {
+export function paceState(used: number | null, elapsed: number | null, slack: number = DEFAULT_TUNING.slackFiveHour): PaceState {
   if (used === null || elapsed === null) return "unknown";
   return used > elapsed + slack ? "ahead" : "behind";
 }
 
-/** Weekly pace for the panel. Unknown below the week floor, the same as the policy, which gives no weekly signal there. */
-export function weekPaceState(used: number | null, elapsed: number | null): PaceState {
+/** Weekly use against the week's elapsed time for the panel. Unknown below the week floor, the same as the policy, which gives no weekly signal there. */
+export function weekPaceState(used: number | null, elapsed: number | null, slack: number = DEFAULT_TUNING.slackWeek): PaceState {
   if (elapsed !== null && elapsed < WEEK_MIN_ELAPSED) return "unknown";
-  return paceState(used, elapsed, WEEK_SLACK_PTS);
+  return paceState(used, elapsed, slack);
 }
 
 /** The newest logged decision by its timestamp (not by file order). Records with a bad timestamp are skipped. */
-export function lastDecision(lines: LogLine[]): { why: string; decidedAt: string } | null {
+export function lastDecision(lines: LogLine[]): { why: string; decidedAt: string; record: DecisionRecord } | null {
   let best: { ts: number; r: DecisionRecord } | null = null;
   for (const r of lines.filter(isTick)) {
     const ts = Date.parse(r.t);
     if (Number.isNaN(ts)) continue;
     if (best === null || ts > best.ts) best = { ts, r };
   }
-  return best === null ? null : { why: best.r.why, decidedAt: best.r.t };
+  return best === null ? null : { why: best.r.why, decidedAt: best.r.t, record: best.r };
 }
 
 /** One plain sentence for the last decision's reason. A manual-change back-off overrides it, with minutes left. */

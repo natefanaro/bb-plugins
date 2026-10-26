@@ -1,4 +1,5 @@
 // Turbo: a time-boxed override that holds the limit at a chosen value and ignores the CPU-hot rule. It ends at the time box, at the weekly quota reset, at the quota cap, and when the limit is changed by hand. Pure: the caller passes the clock, the stored state and the limit readings.
+import { DEFAULT_TUNING, type Tuning } from "./tuning.ts";
 
 export const TURBO_DEFAULT_MS = 2 * 3600_000;
 export const TURBO_MAX_MS = 12 * 3600_000;
@@ -53,9 +54,9 @@ export function raisesCap(globalLimit: number | null, limit: number): boolean {
   return globalLimit !== null && globalLimit < limit;
 }
 
-/** The quota-cap rule, shared with the scheduler: week at 90% or five-hour at 92%. */
-export function quotaNear(s: { weekUsed: number | null; fiveHourUsed: number | null }): boolean {
-  return (s.weekUsed ?? 0) >= 90 || (s.fiveHourUsed ?? 0) >= 92;
+/** The quota-cap rule, shared with the scheduler: week at quotaWeekNear (default 90%) or five-hour at quotaFiveHourNear (default 92%). */
+export function quotaNear(s: { weekUsed: number | null; fiveHourUsed: number | null }, t: Pick<Tuning, "quotaWeekNear" | "quotaFiveHourNear"> = DEFAULT_TUNING): boolean {
+  return (s.weekUsed ?? 0) >= t.quotaWeekNear || (s.fiveHourUsed ?? 0) >= t.quotaFiveHourNear;
 }
 
 export type TurboStep =

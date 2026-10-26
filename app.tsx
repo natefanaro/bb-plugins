@@ -61,18 +61,20 @@ function Bar({ value, max, ticks = [], markAt, tone }: { value: number; max: num
   );
 }
 
-function Quota({ label, used, elapsed, state }: { label: string; used: number | null; elapsed: number | null; state: PanelView["inputs"]["fiveHour"]["state"] }) {
-  const word = state === "ahead" ? "ahead of pace" : state === "behind" ? "within pace" : "no reading";
+function Quota({ label, used, elapsed, projected, state }: { label: string; used: number | null; elapsed: number | null; projected: number | null; state: PanelView["inputs"]["fiveHour"]["state"] }) {
+  const word = state === "ahead" ? "using quota faster than time passes" : state === "behind" ? "within limits" : "no reading";
   return (
     <div className="flex flex-col gap-1">
       <div className="flex justify-between text-sm">
         <span>{label}</span>
         <span className="text-muted-foreground">
           {used === null ? "?" : `${used}% used`}
-          {elapsed !== null && ` · ${elapsed}% of window elapsed`} · {word}
+          {elapsed !== null && ` · ${elapsed}% of window elapsed`}
+          {projected !== null && ` · about ${Math.round(projected)}% by reset`}
         </span>
       </div>
       {used !== null && <Bar value={used} max={100} markAt={elapsed ?? undefined} tone={state === "ahead" ? "bg-destructive" : "bg-primary"} />}
+      <div className="text-xs text-muted-foreground">{word}</div>
     </div>
   );
 }
@@ -149,7 +151,7 @@ function TurboControl({ view, onChanged }: { view: PanelView; onChanged: () => v
       ) : (
         <div className="flex items-center justify-between gap-2 text-sm">
           <span className="text-muted-foreground">
-            {turbo.suggested ? "Weekly quota is behind pace with 3 h or less to the reset." : "Off."}
+            {turbo.suggested ? "Weekly quota is well under its time share with 3 h or less to the reset." : "Off."}
           </span>
           <button type="button" className="rounded border px-2 py-1 text-xs" disabled={busy} onClick={() => act("turboStart")}>
             Turbo to {view.limit.max} for 2 h
@@ -231,8 +233,8 @@ function ConcurrencyCoachPage() {
             Pressure when free memory is under {inputs.memory.memFreeMinPercent}%, or swap is at {inputs.memory.swapHotPercent}% or more while paging out. It lowers the limit one step per tick and blocks raising it.
           </div>
         </div>
-        <Quota label="5-hour window" used={inputs.fiveHour.used} elapsed={inputs.fiveHour.elapsed} state={inputs.fiveHour.state} />
-        <Quota label="Weekly window" used={inputs.week.used} elapsed={inputs.week.elapsed} state={inputs.week.state} />
+        <Quota label="5-hour window" used={inputs.fiveHour.used} elapsed={inputs.fiveHour.elapsed} projected={inputs.fiveHour.projected} state={inputs.fiveHour.state} />
+        <Quota label="Weekly window" used={inputs.week.used} elapsed={inputs.week.elapsed} projected={inputs.week.projected} state={inputs.week.state} />
       </Section>
 
       <Section title="Last 24 hours">
@@ -259,21 +261,59 @@ function ConcurrencyCoachPage() {
   );
 }
 
-/** The small window above the sidebar footer: the limit as a number, coloured by pace. Read-only; it fetches when opened. */
-function PaceWindow() {
+/** The Coach mark as inline SVG, the same geometry as icons/coach.svg. */
+function CoachIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <g transform="rotate(-45 12 12) translate(12 12) scale(0.8) translate(-12 -12)">
+        <line x1="5" y1="12" x2="19" y2="12" />
+        <rect x="1.5" y="6.5" width="3.5" height="11" rx="1.2" />
+        <rect x="19" y="6.5" width="3.5" height="11" rx="1.2" />
+        <rect x="4.5" y="8.5" width="2.5" height="7" rx="0.6" />
+        <rect x="17" y="8.5" width="2.5" height="7" rx="0.6" />
+      </g>
+    </svg>
+  );
+}
+
+/** The footer window: the title and icon, the limit, the last decision and why, and both quota windows. Read-only; it fetches when opened. */
+function CoachWindow() {
   const { view, error } = usePanel();
-  if (error !== null) return <div className="p-3 text-xs text-destructive">Coach unavailable: {error}</div>;
+  if (error !== null) return <div className="p-3 text-xs text-destructive">Concurrency Coach unavailable: {error}</div>;
   if (view === null) return <div className="p-3 text-xs text-muted-foreground">Loading…</div>;
   const { tone, label } = paceTone(view.inputs);
   const colour = tone === "ahead" ? "text-destructive" : tone === "within" ? "text-primary" : "text-muted-foreground";
-  const five = view.inputs.fiveHour;
+  const d = view.why.detail;
+  const m = view.inputs.memory;
   return (
-    <div className="flex min-w-[10rem] flex-col gap-1 p-3">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">Pace</div>
-      <div className={`text-4xl font-medium tabular-nums ${colour}`}>{view.limit.current ?? "?"}</div>
+    <div className="flex w-[22rem] max-w-full flex-col gap-3 p-3">
+      <div className="flex items-center gap-2">
+        <CoachIcon className="h-5 w-5 text-foreground" />
+        <div className="text-sm font-medium">Concurrency Coach</div>
+        <div className={`ml-auto text-2xl font-medium tabular-nums ${colour}`}>{view.limit.current ?? "?"}</div>
+      </div>
       <div className={`text-xs ${colour}`}>{label}</div>
-      <div className="text-xs text-muted-foreground">
-        5h {five.used ?? "?"}% used · {five.elapsed ?? "?"}% elapsed
+
+      <div className="flex flex-col gap-1 border-t pt-2">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">Last decision</div>
+        <div className="text-sm">{view.why.sentence}</div>
+        {d !== null && (
+          <div className="text-xs text-muted-foreground">
+            {d.applied ? "Applied" : "Held"} {d.cur} → {d.next}
+            {d.load !== null && ` · load ${d.load.toFixed(2)} per core`}
+            {m !== null && m.freePct !== null && ` · free memory ${m.freePct}%`}
+            {m !== null && m.swapUsedPct !== null && ` · swap ${m.swapUsedPct}%`}
+          </div>
+        )}
+        <div className="text-xs text-muted-foreground">
+          {view.why.decidedAt === null ? "Nothing logged yet" : `Decided ${new Date(view.why.decidedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2 border-t pt-2">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">Quota windows</div>
+        <Quota label="5-hour window" used={view.inputs.fiveHour.used} elapsed={view.inputs.fiveHour.elapsed} projected={view.inputs.fiveHour.projected} state={view.inputs.fiveHour.state} />
+        <Quota label="Weekly window" used={view.inputs.week.used} elapsed={view.inputs.week.elapsed} projected={view.inputs.week.projected} state={view.inputs.week.state} />
       </div>
     </div>
   );
@@ -282,10 +322,10 @@ function PaceWindow() {
 export default definePluginApp((app) => {
   app.experimental_sidebarFooter.register({
     kind: "disclosure",
-    id: "concurrency-coach-pace",
-    label: "Concurrency Coach pace",
+    id: "concurrency-coach-window",
+    label: "Concurrency Coach",
     icon: "concurrency-coach/coach",
-    component: PaceWindow,
+    component: CoachWindow,
   });
   app.slots.navPanel({
     id: "concurrency-coach",
