@@ -19,7 +19,7 @@
           "ref": "main"
         }
       },
-      "icon": "Gauge"
+      "icon": "./icons/coach.svg"
     }
   ]
 }

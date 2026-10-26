@@ -6,11 +6,12 @@ import type { LogLine } from "./decision-log.ts";
 import type { HostCfg, LimitCfg } from "./io.ts";
 import { planTick } from "./tick.ts";
 import { NO_MEMORY, type MemoryReading } from "./memory.ts";
+import { tuningFrom, type Tuning } from "./tuning.ts";
 import {
   parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboSentence, turboStep, TURBO_DEFAULT_MS, type Turbo,
 } from "./turbo.ts";
 
-export interface CoachSettings {
+export interface CoachSettings extends Partial<Tuning> {
   enabled: boolean;
   host: string;
   minLimit: number;
@@ -144,12 +145,13 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     try { usage = parseUsage(await deps.usage(), deps.now()); } catch { /* quota unknown: scale on CPU alone */ }
     let memory: MemoryReading = NO_MEMORY;
     try { memory = await deps.memory(); } catch { /* memory unknown: not a signal */ }
-    const thresholds = { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent };
-    const signals: Signals = { cur, min, max, loadRatio: load1 / cpus, ...usage, memory: { reading: memory, thresholds } };
+    const tuning = tuningFrom(s);
+    const thresholds = { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec };
+    const signals: Signals = { cur, min, max, loadRatio: load1 / cpus, ...usage, memory: { reading: memory, thresholds }, tuning };
     const now = deps.now();
     // Turbo ends at the quota cap, on a manual change, at the weekly reset, or when its time box runs out.
     const manual = turbo !== null && turboStep(override.lastSet, cur, turbo.limit).kind === "manual";
-    const endReason = turbo === null ? null : turboEndReason(turbo, now, usage.weekResetsAt, quotaNear(signals), manual);
+    const endReason = turbo === null ? null : turboEndReason(turbo, now, usage.weekResetsAt, quotaNear(signals, tuning), manual);
     const g = gate(override, cur, now, Math.max(0, s.overrideBackoffMinutes) * 60_000);
     const plan = planTick({ apply, cur, turbo, endReason, lastSet: override.lastSet, decision: decide(signals), gate: g });
 
@@ -182,7 +184,7 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     if (apply) {
       await persistOverride();
       try {
-        deps.appendLog({ t: new Date(now).toISOString(), host: host.name, cur, next: plan.next, applied, why: plan.why, load: signals.loadRatio, fiveHourUsed: signals.fiveHourUsed, fiveHourElapsed: signals.fiveHourElapsed, weekUsed: signals.weekUsed, override, turbo: plan.kind === "turbo" });
+        deps.appendLog({ t: new Date(now).toISOString(), host: host.name, cur, next: plan.next, applied, why: plan.why, load: signals.loadRatio, fiveHourUsed: signals.fiveHourUsed, fiveHourElapsed: signals.fiveHourElapsed, weekUsed: signals.weekUsed, weekElapsed: signals.weekElapsed, memory: { swapUsedPct: memory.swapUsedPct, freePct: memory.freePct, pageoutsPerSec: memory.pageoutsPerSec }, override, turbo: plan.kind === "turbo" });
       } catch (e) { deps.warn(`decision log not written: ${String(e)}`); }
     }
     return last;

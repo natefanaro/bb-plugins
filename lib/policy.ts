@@ -1,5 +1,6 @@
 // Pure scaling policy: given the current limit and signals, pick the next limit. One step per tick.
 import { memoryHot, memorySentence, type MemoryReading, type MemoryThresholds } from "./memory.ts";
+import { DEFAULT_TUNING, type Tuning } from "./tuning.ts";
 
 export interface Signals {
   cur: number;
@@ -15,16 +16,17 @@ export interface Signals {
   weekElapsed: number | null;
   /** Swap and free-memory readings with their thresholds. Undefined = no memory signal (CPU and quota only). */
   memory?: { reading: MemoryReading; thresholds: MemoryThresholds };
+  /** The tunables. Undefined = the shipped defaults, so existing callers and tests are unchanged. */
+  tuning?: Tuning;
 }
 export interface Decision { next: number; why: string }
 
-export const HOT = 0.85;
-export const IDLE = 0.5;
-export const PACE_SLACK_PTS = 25;
-/** Weekly use may run this many points ahead of the week's elapsed time before the limit steps down. */
-export const WEEK_SLACK_PTS = 6;
-/** Weekly use more than this many points ahead of elapsed blocks raising. Stateless: raising resumes as soon as use is back within the points. */
-export const WEEK_RAISE_SLACK_PTS = 3;
+// The shipped defaults, kept under their old names for callers that read them directly. The policy reads the tuning from the signals.
+export const HOT = DEFAULT_TUNING.hotLoad;
+export const IDLE = DEFAULT_TUNING.idleLoad;
+export const PACE_SLACK_PTS = DEFAULT_TUNING.slackFiveHour;
+export const WEEK_SLACK_PTS = DEFAULT_TUNING.slackWeek;
+export const WEEK_RAISE_SLACK_PTS = DEFAULT_TUNING.raiseSlackWeek;
 /** Below this share of the week elapsed there is no weekly signal, so the first hours do not thrash the limit. */
 export const WEEK_MIN_ELAPSED = 5;
 export const WEEK_MS = 7 * 24 * 3600_000;
@@ -37,25 +39,26 @@ export function weekProjected(used: number, elapsed: number): number | null {
 
 export function decide(s: Signals): Decision {
   const clamp = (n: number) => Math.max(s.min, Math.min(s.max, n));
-  if ((s.weekUsed ?? 0) >= 90 || (s.fiveHourUsed ?? 0) >= 92)
+  const t = s.tuning ?? DEFAULT_TUNING;
+  if ((s.weekUsed ?? 0) >= t.quotaWeekNear || (s.fiveHourUsed ?? 0) >= t.quotaFiveHourNear)
     return { next: s.min, why: `quota near limit (5h ${s.fiveHourUsed ?? "?"}%, week ${s.weekUsed ?? "?"}%)` };
   // Memory pressure comes before CPU: a thrashing host is slow whatever its load. This also blocks raising the limit.
-  if (s.memory && memoryHot(s.memory.reading, s.memory.thresholds))
+  if (s.memory && memoryHot(s.memory.reading, { ...s.memory.thresholds, pageoutHotPerSec: t.pageoutHotPerSec }))
     return { next: clamp(s.cur - 1), why: `memory pressure (${memorySentence(s.memory.reading)})` };
-  if (s.fiveHourUsed !== null && s.fiveHourElapsed !== null && s.fiveHourUsed > s.fiveHourElapsed + PACE_SLACK_PTS)
-    return { next: clamp(s.cur - 1), why: `burning ahead of pace (${s.fiveHourUsed}% used, ${s.fiveHourElapsed}% elapsed)` };
+  if (s.fiveHourUsed !== null && s.fiveHourElapsed !== null && s.fiveHourUsed > s.fiveHourElapsed + t.slackFiveHour)
+    return { next: clamp(s.cur - 1), why: `5-hour use ahead of time elapsed (${s.fiveHourUsed}% used, ${s.fiveHourElapsed}% elapsed)` };
   // Weekly rules only run once the week has elapsed past the floor. Unknown weekly figures are no signal.
   const week = s.weekUsed !== null && s.weekElapsed !== null && s.weekElapsed >= WEEK_MIN_ELAPSED ? { used: s.weekUsed, elapsed: s.weekElapsed } : null;
   const projected = week ? weekProjected(week.used, week.elapsed) : null;
   const weekDetail = week && projected !== null ? `${week.used}% used, ${week.elapsed}% elapsed, projected ${Math.round(projected)}% by reset` : "";
-  if (week && week.used > week.elapsed + WEEK_SLACK_PTS)
-    return { next: clamp(s.cur - 1), why: `burning ahead of weekly pace (${weekDetail})` };
-  if (s.loadRatio > HOT) return { next: clamp(s.cur - 1), why: `CPU hot (load/cpu ${s.loadRatio.toFixed(2)})` };
-  if (s.loadRatio < IDLE) {
+  if (week && week.used > week.elapsed + t.slackWeek)
+    return { next: clamp(s.cur - 1), why: `weekly use ahead of time elapsed (${weekDetail})` };
+  if (s.loadRatio > t.hotLoad) return { next: clamp(s.cur - 1), why: `CPU hot (load/cpu ${s.loadRatio.toFixed(2)})` };
+  if (s.loadRatio < t.idleLoad) {
     // Raising waits until weekly use is back within the raise slack of elapsed. The reason gives the sustainable limit at the current burn: cur * 100 / projected.
-    if (week && week.used > week.elapsed + WEEK_RAISE_SLACK_PTS) {
+    if (week && week.used > week.elapsed + t.raiseSlackWeek) {
       const sustainable = projected !== null && projected > 100 ? Math.max(s.min, Math.floor((s.cur * 100) / projected)) : s.cur;
-      return { next: clamp(s.cur), why: `hold: no raise while week is more than ${WEEK_RAISE_SLACK_PTS} points ahead of pace (${weekDetail}); sustainable limit ${sustainable}` };
+      return { next: clamp(s.cur), why: `hold: no raise while weekly use is more than ${t.raiseSlackWeek} points ahead of time elapsed (${weekDetail}); sustainable limit ${sustainable}` };
     }
     return { next: clamp(s.cur + 1), why: `CPU idle (load/cpu ${s.loadRatio.toFixed(2)})` };
   }

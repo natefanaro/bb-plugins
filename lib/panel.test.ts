@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { history, lastDecision, loadLevel, paceState, reasonSentence, topCpuName, weekPaceState } from "./panel.ts";
-import type { DecisionRecord } from "./decision-log.ts";
+import type { DecisionRecord, LogLine } from "./decision-log.ts";
 
 const NOW = Date.parse("2026-10-24T18:00:00Z");
 const MIN = 60_000;
@@ -88,13 +88,21 @@ test("top CPU: the first process by name, path stripped, arguments never shown",
 import { paceTone } from "./pace.ts";
 const pace = (state: "ahead" | "behind" | "unknown") => ({ state });
 test("paceTone: ahead on either window is red", () => {
-  assert.deepEqual(paceTone({ fiveHour: pace("ahead"), week: pace("behind"), memory: { hot: false } }), { tone: "ahead", label: "ahead of pace" });
-  assert.deepEqual(paceTone({ fiveHour: pace("behind"), week: pace("ahead"), memory: { hot: false } }), { tone: "ahead", label: "ahead of pace" });
+  assert.deepEqual(paceTone({ fiveHour: pace("ahead"), week: pace("behind"), memory: { hot: false } }), { tone: "ahead", label: "using quota faster than time passes" });
+  assert.deepEqual(paceTone({ fiveHour: pace("behind"), week: pace("ahead"), memory: { hot: false } }), { tone: "ahead", label: "using quota faster than time passes" });
 });
 test("paceTone: memory pressure is red and named first, even when quota is fine", () => {
   assert.deepEqual(paceTone({ fiveHour: pace("behind"), week: pace("behind"), memory: { hot: true } }), { tone: "ahead", label: "memory pressure" });
 });
 test("paceTone: within pace is the primary tone; no reading is muted", () => {
-  assert.deepEqual(paceTone({ fiveHour: pace("behind"), week: pace("unknown"), memory: { hot: false } }), { tone: "within", label: "within pace" });
+  assert.deepEqual(paceTone({ fiveHour: pace("behind"), week: pace("unknown"), memory: { hot: false } }), { tone: "within", label: "within limits" });
   assert.deepEqual(paceTone({ fiveHour: pace("unknown"), week: pace("unknown"), memory: { hot: false } }), { tone: "unknown", label: "no quota reading" });
+});
+
+test("lastDecision carries the full record the Coach window reads", () => {
+  const rec = { t: "2026-10-26T10:00:00.000Z", host: "m", cur: 3, next: 4, applied: true, why: "CPU idle", load: 0.3, fiveHourUsed: 20, fiveHourElapsed: 25, weekUsed: 10, weekElapsed: 12, memory: { swapUsedPct: 50, freePct: 70, pageoutsPerSec: 0 }, override: { lastSet: 4, pausedUntil: 0 } } as const;
+  const found = lastDecision([{ ...rec } as unknown as LogLine]);
+  assert.equal(found?.record.cur, 3);
+  assert.equal(found?.record.weekElapsed, 12);
+  assert.deepEqual(found?.record.memory, { swapUsedPct: 50, freePct: 70, pageoutsPerSec: 0 });
 });

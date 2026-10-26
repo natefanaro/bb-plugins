@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Concurrency Coach",
-    "description": "Raises and lowers the host thread limit every 5 minutes from CPU load and Claude plan quota pace, within a min and max you set. No model calls.",
+    "description": "Raises and lowers the host thread limit every 5 minutes from CPU load and Claude plan quota use, within a min and max you set. No model calls.",
     "branding": {
       "icon": "./icons/coach.svg",
       "experimental_icons": {

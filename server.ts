@@ -6,6 +6,8 @@ import { cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { parseUsage, type Signals } from "./lib/policy.ts";
 import { getLimits, getUsage, readMemory, restoreLimits, setHostLimit, type HostCfg, type LimitCfg } from "./lib/io.ts";
 import { memoryHot } from "./lib/memory.ts";
+import { tuningFrom } from "./lib/tuning.ts";
+import { weekProjected } from "./lib/policy.ts";
 import { appendDecision, formatDecision, logFile, readDecisions, type TurboEvent } from "./lib/decision-log.ts";
 import { history, lastDecision, loadLevel, paceState, reasonSentence, topCpuName, weekPaceState } from "./lib/panel.ts";
 import { createExecutor, type Tick } from "./lib/executor.ts";
@@ -17,6 +19,9 @@ import { coachRpcContract, type PanelView, type TurboView } from "./lib/contract
 
 const execFileP = promisify(execFile);
 
+/** Used projected to the reset at the current rate, in percent; null without a usable elapsed share (the same floor as the policy). */
+const projectedOf = (used: number | null, elapsed: number | null): number | null => (used === null || elapsed === null ? null : weekProjected(used, elapsed));
+
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     enabled: { type: "boolean", label: "Adjust the limit automatically", default: true },
@@ -26,6 +31,15 @@ export default async function plugin(bb: BbPluginApi) {
     overrideBackoffMinutes: { type: "number", label: "Back off this many minutes after a manual limit change", default: 120 },
     swapHotPercent: { type: "number", label: "Swap used (percent) that counts as memory pressure", default: 70 },
     memFreeMinPercent: { type: "number", label: "Free memory (percent) below which memory counts as pressure", default: 15 },
+    // The policy tunables. Each default is the value the plugin shipped with.
+    hotLoad: { type: "number", label: "CPU load per core above which the limit steps down", default: 0.85 },
+    idleLoad: { type: "number", label: "CPU load per core below which the limit steps up", default: 0.5 },
+    quotaFiveHourNear: { type: "number", label: "5-hour use (percent) at which the limit drops to the minimum", default: 92 },
+    quotaWeekNear: { type: "number", label: "Weekly use (percent) at which the limit drops to the minimum", default: 90 },
+    slackFiveHour: { type: "number", label: "5-hour use may run this many points ahead of time elapsed", default: 25 },
+    slackWeek: { type: "number", label: "Weekly use may run this many points ahead of time elapsed", default: 6 },
+    raiseSlackWeek: { type: "number", label: "Weekly use points ahead of time elapsed that hold raising", default: 3 },
+    pageoutHotPerSec: { type: "number", label: "Page-outs per second that count as thrashing (with swap)", default: 100 },
   });
 
   // The executor holds the back-off and Turbo (kept in plugin storage) and carries out each tick. See lib/executor.ts.
@@ -65,6 +79,7 @@ export default async function plugin(bb: BbPluginApi) {
   /** Read-only snapshot for the panel. Reads the same sources the scheduler reads; changes nothing. */
   async function panel(): Promise<PanelView> {
     const s = await settings.get();
+    const tuning = tuningFrom(s);
     const now = Date.now();
     const min = Math.max(1, Math.floor(s.minLimit)), max = Math.max(min, Math.floor(s.maxLimit));
     const loadRatio = os.loadavg()[0] / (os.cpus().length || 1);
@@ -95,7 +110,7 @@ export default async function plugin(bb: BbPluginApi) {
     } catch { /* queue unavailable */ }
     const records = readDecisions(logFile(), 2000);
     const last = lastDecision(records);
-    const near = quotaNear({ weekUsed: usage.weekUsed, fiveHourUsed: usage.fiveHourUsed });
+    const near = quotaNear({ weekUsed: usage.weekUsed, fiveHourUsed: usage.fiveHourUsed }, tuning);
     const { override, turbo } = exec.state();
     const manual = turbo !== null && current !== null && turboStep(override.lastSet, current, turbo.limit).kind === "manual";
     const turboNow = turboView(turbo, now, usage.weekResetsAt, near, manual);
@@ -122,13 +137,22 @@ export default async function plugin(bb: BbPluginApi) {
         decidedAt: last?.decidedAt ?? null,
         backingOff,
         backOffMinutesLeft: backingOff ? Math.ceil((override.pausedUntil - now) / 60_000) : 0,
+        detail: last === null ? null : {
+          applied: last.record.applied,
+          cur: last.record.cur,
+          next: last.record.next,
+          load: last.record.load ?? null,
+          fiveHour: { used: last.record.fiveHourUsed ?? null, elapsed: last.record.fiveHourElapsed ?? null },
+          week: { used: last.record.weekUsed ?? null, elapsed: last.record.weekElapsed ?? null },
+          memory: last.record.memory ?? null,
+        },
       },
       turbo: turboNow,
       inputs: {
-        load: { ratio: loadRatio, level: loadLevel(loadRatio) },
-        memory: { swapUsedPct: memory.swapUsedPct, freePct: memory.freePct, pageoutsPerSec: memory.pageoutsPerSec, hot: memoryHot(memory, { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent }), swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent },
-        fiveHour: { used: usage.fiveHourUsed, elapsed: usage.fiveHourElapsed, state: paceState(usage.fiveHourUsed, usage.fiveHourElapsed) },
-        week: { used: usage.weekUsed, elapsed: usage.weekElapsed, state: weekPaceState(usage.weekUsed, usage.weekElapsed) },
+        load: { ratio: loadRatio, level: loadLevel(loadRatio, tuning) },
+        memory: { swapUsedPct: memory.swapUsedPct, freePct: memory.freePct, pageoutsPerSec: memory.pageoutsPerSec, hot: memoryHot(memory, { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec }), swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent },
+        fiveHour: { used: usage.fiveHourUsed, elapsed: usage.fiveHourElapsed, projected: projectedOf(usage.fiveHourUsed, usage.fiveHourElapsed), state: paceState(usage.fiveHourUsed, usage.fiveHourElapsed, tuning.slackFiveHour) },
+        week: { used: usage.weekUsed, elapsed: usage.weekElapsed, projected: projectedOf(usage.weekUsed, usage.weekElapsed), state: weekPaceState(usage.weekUsed, usage.weekElapsed, tuning.slackWeek) },
       },
       history: history(records, now, 24 * 3600_000),
       topCpu,
@@ -150,7 +174,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.cli.register(
     defineCli({
       name: "concurrency-coach",
-      summary: "Scale the host thread limit from CPU load and Claude quota pace",
+      summary: "Scale the host thread limit from CPU load and Claude quota use",
       commands: {
         status: cliCommand({
           summary: "Show what Concurrency Coach would do now (changes nothing)",

@@ -15,17 +15,17 @@ test("drops to min near the quota limit", () => {
   assert.equal(decide({ ...base, weekUsed: 91 }).next, 1);
   assert.equal(decide({ ...base, fiveHourUsed: 93, fiveHourElapsed: 95 }).next, 1);
 });
-test("steps down when burning ahead of pace, even if CPU is idle", () => {
+test("steps down when 5-hour use is ahead of time elapsed, even if CPU is idle", () => {
   const d = decide({ ...base, loadRatio: 0.1, fiveHourUsed: 70, fiveHourElapsed: 30 });
   assert.equal(d.next, 3);
-  assert.match(d.why, /ahead of pace/);
+  assert.match(d.why, /5-hour use ahead of time elapsed/);
 });
 test("unknown quota does not block scaling up", () => assert.equal(decide({ ...base, loadRatio: 0.1, fiveHourUsed: null, fiveHourElapsed: null, weekUsed: null, weekElapsed: null }).next, 5));
 
-test("weekly ahead of pace steps down, even if CPU is idle and the 5-hour window is fine", () => {
+test("weekly use ahead of time elapsed steps down, even if CPU is idle and the 5-hour window is fine", () => {
   const d = decide({ ...base, loadRatio: 0.1, weekUsed: 70, weekElapsed: 30 });
   assert.equal(d.next, 3);
-  assert.match(d.why, /ahead of weekly pace \(70% used, 30% elapsed, projected 233% by reset\)/);
+  assert.match(d.why, /weekly use ahead of time elapsed \(70% used, 30% elapsed, projected 233% by reset\)/);
 });
 test("weekly behind pace does not step down (CPU hot still steps down; no weekly reason)", () => {
   const d = decide({ ...base, weekUsed: 30, weekElapsed: 60 });
@@ -55,7 +55,7 @@ test("weekly raise gate is 3 points: at or within 3 ahead of elapsed raises, mor
   assert.equal(decide({ ...base, cur: 4, loadRatio: 0.1, weekUsed: 43, weekElapsed: 40 }).next, 5);
   const hold = decide({ ...base, cur: 4, loadRatio: 0.1, weekUsed: 44, weekElapsed: 40 });
   assert.equal(hold.next, 4);
-  assert.equal(hold.why, "hold: no raise while week is more than 3 points ahead of pace (44% used, 40% elapsed, projected 110% by reset); sustainable limit 3");
+  assert.equal(hold.why, "hold: no raise while weekly use is more than 3 points ahead of time elapsed (44% used, 40% elapsed, projected 110% by reset); sustainable limit 3");
 });
 test("weekly raise gate does not step down: over the 6-point slack steps down, between 3 and 6 only holds", () => {
   assert.equal(decide({ ...base, cur: 4, loadRatio: 0.7, weekUsed: 46, weekElapsed: 40 }).next, 4);
@@ -64,7 +64,7 @@ test("weekly raise gate does not step down: over the 6-point slack steps down, b
 test("weekly 5-point ahead with CPU idle holds at the current limit, reason gives the sustainable limit", () => {
   const d = decide({ ...base, cur: 6, loadRatio: 0.1, weekUsed: 44, weekElapsed: 39 });
   assert.equal(d.next, 6);
-  assert.match(d.why, /no raise while week is more than 3 points ahead of pace \(44% used, 39% elapsed, projected 113% by reset\); sustainable limit 5/);
+  assert.match(d.why, /no raise while weekly use is more than 3 points ahead of time elapsed \(44% used, 39% elapsed, projected 113% by reset\); sustainable limit 5/);
 });
 test("weekly raise gate with the limit at min holds at min", () => {
   assert.equal(decide({ ...base, cur: 1, min: 1, loadRatio: 0.1, weekUsed: 44, weekElapsed: 40 }).next, 1);
@@ -75,7 +75,7 @@ test("unknown or under-floor weekly figures never hold the raise", () => {
 test("the first-day example: 21% used with 8% elapsed steps down with the numbers in the reason", () => {
   const d = decide({ ...base, loadRatio: 0.7, weekUsed: 21, weekElapsed: 8 });
   assert.equal(d.next, 3);
-  assert.equal(d.why, "burning ahead of weekly pace (21% used, 8% elapsed, projected 263% by reset)");
+  assert.equal(d.why, "weekly use ahead of time elapsed (21% used, 8% elapsed, projected 263% by reset)");
 });
 test("weekProjected: used over elapsed, null under the floor", () => {
   assert.equal(weekProjected(30, 60), 50);
@@ -88,7 +88,7 @@ test("weekly unknown (used or elapsed missing) is no signal", () => {
 test("weekly pace and CPU hot both point down: one step, reason names the first rule that fires", () => {
   const d = decide({ ...base, loadRatio: 0.95, weekUsed: 70, weekElapsed: 30 });
   assert.equal(d.next, 3);
-  assert.match(d.why, /weekly pace/);
+  assert.match(d.why, /weekly use ahead of time elapsed/);
 });
 
 const NOW = Date.parse("2026-10-21T10:00:00Z");
@@ -112,3 +112,24 @@ test("weekly window without a reset time has no elapsed signal", () => {
   assert.equal(u.weekElapsed, null);
 });
 test("tolerates empty or odd input", () => assert.deepEqual(parseUsage(null, NOW), { fiveHourUsed: null, fiveHourElapsed: null, weekUsed: null, weekElapsed: null, weekResetsAt: null }));
+
+import { DEFAULT_TUNING } from "./tuning.ts";
+test("the default tuning gives the same decision as no tuning, on a spread of signals", () => {
+  const samples = [
+    { ...base, loadRatio: 0.1 },
+    { ...base, loadRatio: 0.95 },
+    { ...base, loadRatio: 0.7, weekUsed: 70, weekElapsed: 30 },
+    { ...base, loadRatio: 0.1, fiveHourUsed: 93, fiveHourElapsed: 95 },
+    { ...base, loadRatio: 0.1, weekUsed: 44, weekElapsed: 40 },
+  ];
+  for (const s of samples) assert.deepEqual(decide({ ...s, tuning: DEFAULT_TUNING }), decide(s));
+});
+test("a changed tunable changes the decision: hotLoad 0.7 steps down at 0.75", () => {
+  assert.equal(decide({ ...base, loadRatio: 0.75 }).next, 4, "default 0.85: hold");
+  assert.equal(decide({ ...base, loadRatio: 0.75, tuning: { ...DEFAULT_TUNING, hotLoad: 0.7 } }).next, 3);
+});
+test("a changed quota threshold moves the drop to the minimum", () => {
+  assert.doesNotMatch(decide({ ...base, weekUsed: 85 }).why, /quota near limit/, "default 90: not near the limit");
+  assert.equal(decide({ ...base, weekUsed: 85, tuning: { ...DEFAULT_TUNING, quotaWeekNear: 80 } }).next, 1);
+  assert.match(decide({ ...base, weekUsed: 85, tuning: { ...DEFAULT_TUNING, quotaWeekNear: 80 } }).why, /quota near limit/);
+});

@@ -16,7 +16,12 @@ export const PAGING_SAMPLE_SEC = 5;
 /** Page-outs per second at or above which swap counts as thrashing. Page-ins are not counted: a healthy Mac pages in at several hundred per second. */
 export const PAGEOUT_HOT_PER_SEC = 100;
 
-export interface MemoryThresholds { swapHotPercent: number; memFreeMinPercent: number }
+export interface MemoryThresholds {
+  swapHotPercent: number;
+  memFreeMinPercent: number;
+  /** Page-outs per second for swap to count as thrashing. Undefined = PAGEOUT_HOT_PER_SEC. */
+  pageoutHotPerSec?: number;
+}
 
 /** Parse `sysctl -n vm.swapusage`: "total = 23552.00M  used = 21849.56M  free = 1702.44M  (encrypted)". */
 export function parseSwapUsage(stdout: string): number | null {
@@ -58,7 +63,7 @@ export function freeMemoryLow(r: MemoryReading, t: MemoryThresholds): boolean {
 
 /** Swap counts as pressure only with active paging out: swap at or above its threshold AND page-outs at or above PAGEOUT_HOT_PER_SEC. */
 export function swapThrashing(r: MemoryReading, t: MemoryThresholds): boolean {
-  return r.swapUsedPct !== null && r.swapUsedPct >= t.swapHotPercent && r.pageoutsPerSec !== null && r.pageoutsPerSec >= PAGEOUT_HOT_PER_SEC;
+  return r.swapUsedPct !== null && r.swapUsedPct >= t.swapHotPercent && r.pageoutsPerSec !== null && r.pageoutsPerSec >= (t.pageoutHotPerSec ?? PAGEOUT_HOT_PER_SEC);
 }
 
 /** Memory is hot when free memory is low, or swap is thrashing. Unknown readings are not hot. */

@@ -35,7 +35,7 @@ The effective raise gate is therefore 3 points above elapsed, not 0. Weekly use 
 
 **Decision:** the ticket asks for two things that conflict in the band above elapsed and within 3 points. Under a straight-line projection, a projection over 100% starts at elapsed, but the 3-point tolerance allows raises up to elapsed + 3. The 3-point gate wins in that band, so the projection is not enforced as a cap. Example: 41% used at 40% elapsed projects to 102.5% and still raises. The reason on a held raise still shows the sustainable limit. To undo this and enforce the projection cap, the idle branch of `decide()` would need a `projected > 100` check, which would change the 3-point behavior and the test at 41% / 40%.
 
-Every weekly reason in the decision log gives used percent, elapsed percent and projected percent by reset, for example `burning ahead of weekly pace (21% used, 8% elapsed, projected 263% by reset)`.
+Every weekly reason in the decision log gives used percent, elapsed percent and projected percent by reset, for example `weekly use ahead of time elapsed (21% used, 8% elapsed, projected 263% by reset)`.
 
 Concurrency Coach reads the host's limit through the built-in `concurrency-limit` plugin (`getConfiguration` / `setConfiguration`) and quota through `bb--provider-usage` `getUsage`. It parses Claude Code windows labelled like `Five-hour limit` or `session` (five-hour) and `Weekly limit` (weekly).
 

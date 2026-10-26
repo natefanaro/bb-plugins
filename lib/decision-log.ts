@@ -16,6 +16,9 @@ export interface DecisionRecord {
   fiveHourUsed: number | null;
   fiveHourElapsed: number | null;
   weekUsed: number | null;
+  /** The readings the decision used, for the Coach window. Lines written before these fields have none. */
+  weekElapsed?: number | null;
+  memory?: { swapUsedPct: number | null; freePct: number | null; pageoutsPerSec: number | null } | null;
   override: { lastSet: number | null; pausedUntil: number };
   /** True when the tick was made under an active Turbo (lines written before Turbo have no field). */
   turbo?: boolean;

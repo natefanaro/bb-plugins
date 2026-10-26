@@ -7,7 +7,7 @@ export interface PaceInputs { fiveHour: { state: PaceState }; week: { state: Pac
  */
 export function paceTone(i: PaceInputs): { tone: "ahead" | "within" | "unknown"; label: string } {
   if (i.memory.hot) return { tone: "ahead", label: "memory pressure" };
-  if (i.fiveHour.state === "ahead" || i.week.state === "ahead") return { tone: "ahead", label: "ahead of pace" };
-  if (i.fiveHour.state === "behind" || i.week.state === "behind") return { tone: "within", label: "within pace" };
+  if (i.fiveHour.state === "ahead" || i.week.state === "ahead") return { tone: "ahead", label: "using quota faster than time passes" };
+  if (i.fiveHour.state === "behind" || i.week.state === "behind") return { tone: "within", label: "within limits" };
   return { tone: "unknown", label: "no quota reading" };
 }
