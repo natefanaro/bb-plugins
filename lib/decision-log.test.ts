@@ -6,7 +6,7 @@ import path from "node:path";
 import { appendDecision, formatDecision, isTick, readDecisions, type DecisionRecord } from "./decision-log.ts";
 
 function tmpFile(): string {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pacer-log-")), "decisions.jsonl");
+  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "coach-log-")), "decisions.jsonl");
 }
 function rec(i: number, over: Partial<DecisionRecord> = {}): DecisionRecord {
   return {
@@ -33,7 +33,7 @@ test("readDecisions returns the last N, oldest first", () => {
 });
 
 test("missing log reads as empty", () => {
-  assert.deepEqual(readDecisions(path.join(os.tmpdir(), "no-such-pacer-log", "x.jsonl"), 10), []);
+  assert.deepEqual(readDecisions(path.join(os.tmpdir(), "no-such-coach-log", "x.jsonl"), 10), []);
 });
 
 test("rotates at the cap: the old file moves to .1 and reads still span both", () => {

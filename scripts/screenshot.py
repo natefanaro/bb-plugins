@@ -1,4 +1,4 @@
-"""Capture the Concurrency Pacer panel in light and dark themes through the bb web UI.
+"""Capture the Concurrency Coach panel in light and dark themes through the bb web UI.
 
 Needs the bb app running on 127.0.0.1:38886, a headless Chromium (Playwright's chromium_headless_shell), and the
 `websocket-client` Python package. Usage: python3 scripts/screenshot.py <output-dir>
@@ -9,10 +9,10 @@ import websocket
 
 OUT = sys.argv[1] if len(sys.argv) > 1 else sys.exit("usage: screenshot.py <output-dir>")
 BIN = sorted(glob.glob(os.path.expanduser("~/Library/Caches/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-mac-arm64/chrome-headless-shell")))[-1]
-URL = "http://127.0.0.1:38886/plugins/concurrency-pacer/concurrency-pacer"
+URL = "http://127.0.0.1:38886/plugins/concurrency-coach/concurrency-coach"
 PORT = 9333
 os.makedirs(OUT, exist_ok=True)
-profile = tempfile.mkdtemp(prefix="pacer-profile-")
+profile = tempfile.mkdtemp(prefix="coach-profile-")
 proc = subprocess.Popen([BIN, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
     f"--remote-debugging-port={PORT}", "--window-size=1280,1100", f"--user-data-dir={profile}", "about:blank"],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

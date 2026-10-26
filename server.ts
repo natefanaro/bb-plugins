@@ -1,4 +1,4 @@
-// bb-plugin-concurrency-pacer: every 5 minutes, step the host thread limit up or down from CPU load and Claude plan quota pace. No model calls. Turbo holds a chosen limit for a time box; it is set from the CLI or the panel.
+// bb-plugin-concurrency-coach: every 5 minutes, step the host thread limit up or down from CPU load and Claude plan quota pace. No model calls. Turbo holds a chosen limit for a time box; it is set from the CLI or the panel.
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -13,7 +13,7 @@ import {
   parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboSentence, turboStep, turboSuggested,
   TURBO_DEFAULT_MS, TURBO_MAX_LIMIT, TURBO_MAX_MS, type Turbo,
 } from "./lib/turbo.ts";
-import { pacerRpcContract, type PanelView, type TurboView } from "./lib/contract.ts";
+import { coachRpcContract, type PanelView, type TurboView } from "./lib/contract.ts";
 
 const execFileP = promisify(execFile);
 
@@ -106,7 +106,9 @@ export default async function plugin(bb: BbPluginApi) {
       const { stdout } = await execFileP("ps", ["-Ao", "pcpu,comm", "-r"], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 });
       topCpu = topCpuName(stdout);
     } catch { /* process list unavailable */ }
-    const memory = await readMemory();
+    // Fast read for the panel: swap and free memory now, and the paging rate from the last tick (null until a tick has run since the plugin loaded).
+    const fresh = await readMemory({ paging: false });
+    const memory = { ...fresh, pageoutsPerSec: exec.last()?.signals.memory?.reading.pageoutsPerSec ?? null };
     const backingOff = override.pausedUntil > now;
     const activeTurbo = turboNow.active && turbo !== null ? turbo : null;
     return {
@@ -133,7 +135,7 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
 
-  bb.rpc.register(pacerRpcContract, {
+  bb.rpc.register(coachRpcContract, {
     panel,
     turboStart: async ({ limit, minutes }) => {
       await exec.startTurboFrom("panel", limit ?? undefined, minutes === null ? undefined : minutes * 60_000);
@@ -147,11 +149,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register(
     defineCli({
-      name: "concurrency-pacer",
+      name: "concurrency-coach",
       summary: "Scale the host thread limit from CPU load and Claude quota pace",
       commands: {
         status: cliCommand({
-          summary: "Show what Concurrency Pacer would do now (changes nothing)",
+          summary: "Show what Concurrency Coach would do now (changes nothing)",
           options: { json: { type: "boolean", description: "Print JSON" } },
           async run(input) {
             const t = await exec.tick(false);
@@ -178,7 +180,7 @@ export default async function plugin(bb: BbPluginApi) {
               return { exitCode: 0, stdout: ended ? "Turbo off." : "Turbo was not on." };
             }
             if (input.positionals.action !== undefined) {
-              return { exitCode: 1, stderr: "Usage:\n  bb concurrency-pacer turbo [--limit N] [--for 2h]\n  bb concurrency-pacer turbo off" };
+              return { exitCode: 1, stderr: "Usage:\n  bb concurrency-coach turbo [--limit N] [--for 2h]\n  bb concurrency-coach turbo off" };
             }
             const { turbo: t, capRaised } = await exec.startTurboFrom("cli", input.options.limit, input.options.for);
             const notes = [

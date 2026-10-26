@@ -37,7 +37,7 @@ test("pace is ahead only past the slack, behind otherwise, unknown when a figure
 test("reason sentence: capitalised, with a full stop, and a manual back-off replaces the last reason with minutes left", () => {
   assert.equal(reasonSentence({ why: "CPU hot (load/cpu 1.55)" }, 0, NOW), "CPU hot (load/cpu 1.55).");
   assert.equal(reasonSentence({ why: "hold." }, 0, NOW), "Hold.");
-  assert.equal(reasonSentence(null, 0, NOW), "No decision yet since Pacer started.");
+  assert.equal(reasonSentence(null, 0, NOW), "No decision yet since Coach started.");
   assert.equal(
     reasonSentence({ why: "CPU hot" }, NOW + 47 * MIN, NOW),
     "Backing off after a manual limit change: 47 min left.",

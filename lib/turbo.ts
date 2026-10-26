@@ -66,7 +66,7 @@ export type TurboStep =
 
 /**
  * What Turbo does on a tick. No baseline yet (first tick after a restart): record the limit and do not write, as the back-off gate does.
- * A limit that is not the value Pacer last set was changed by someone else: end Turbo; never overwrite it.
+ * A limit that is not the value Coach last set was changed by someone else: end Turbo; never overwrite it.
  * Otherwise write the chosen limit when the last write has not reached it; hold when it has.
  */
 export function turboStep(lastSet: number | null, cur: number, limit: number): TurboStep {

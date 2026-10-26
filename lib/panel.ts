@@ -38,7 +38,7 @@ export function reasonSentence(last: Pick<DecisionRecord, "why"> | null, pausedU
   if (pausedUntil > now) {
     return `Backing off after a manual limit change: ${Math.ceil((pausedUntil - now) / 60_000)} min left.`;
   }
-  if (last === null) return "No decision yet since Pacer started.";
+  if (last === null) return "No decision yet since Coach started.";
   const text = last.why.trim();
   const sentence = text.charAt(0).toUpperCase() + text.slice(1);
   return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;

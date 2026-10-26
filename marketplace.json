@@ -3,11 +3,11 @@
   "schemaVersion": 1,
   "name": "bb-plugins",
   "displayName": "BB Plugins (natefanaro)",
-  "description": "Plugins for bb. Currently: Concurrency Pacer.",
+  "description": "Plugins for bb. Currently: Concurrency Coach.",
   "plugins": [
     {
-      "id": "concurrency-pacer",
-      "displayName": "Concurrency Pacer",
+      "id": "concurrency-coach",
+      "displayName": "Concurrency Coach",
       "description": "Raises and lowers the host thread limit every five minutes from CPU load, memory pressure and Claude plan quota pace.",
       "tags": ["concurrency", "quota"],
       "author": {

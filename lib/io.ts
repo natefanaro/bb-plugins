@@ -39,16 +39,17 @@ export async function restoreLimits(globalLimit: number | null, hostOverrides: {
 }
 
 /** Swap and free memory from the Mac's own tools. Each reading is null when its command fails: the scheduler then scales on CPU and quota as before. */
-export async function readMemory(): Promise<MemoryReading> {
+export async function readMemory(opts: { paging: boolean } = { paging: true }): Promise<MemoryReading> {
   if (process.platform !== "darwin") return NO_MEMORY;
   const run = (cmd: string, args: string[], timeout = 3000) => new Promise<string | null>((resolve) => {
     execFile(cmd, args, { timeout, maxBuffer: 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
   });
   // vm_stat's second sample takes PAGING_SAMPLE_SEC seconds, so it gets a longer timeout.
+  // The panel passes paging: false. Its five-second sample would make the page take that long to load; the panel shows the last tick's sample instead.
   const [swap, pressure, paging] = await Promise.all([
     run("sysctl", ["-n", "vm.swapusage"]),
     run("memory_pressure", []),
-    run("vm_stat", ["-c", "2", String(PAGING_SAMPLE_SEC)], (PAGING_SAMPLE_SEC + 5) * 1000),
+    opts.paging ? run("vm_stat", ["-c", "2", String(PAGING_SAMPLE_SEC)], (PAGING_SAMPLE_SEC + 5) * 1000) : Promise.resolve(null),
   ]);
   return {
     swapUsedPct: swap === null ? null : parseSwapUsage(swap),

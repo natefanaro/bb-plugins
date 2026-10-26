@@ -1,8 +1,8 @@
-// Manual-override guard: if the host limit no longer matches what Pacer last set, someone changed it by hand. Back off for a window instead of overwriting it. Pure: the caller passes the clock and keeps the state.
+// Manual-override guard: if the host limit no longer matches what Coach last set, someone changed it by hand. Back off for a window instead of overwriting it. Pure: the caller passes the clock and keeps the state.
 export interface OverrideState {
-  /** The limit Pacer last wrote, or null before its first write. */
+  /** The limit Coach last wrote, or null before its first write. */
   lastSet: number | null;
-  /** Epoch ms until which Pacer does not write. 0 = not paused. */
+  /** Epoch ms until which Coach does not write. 0 = not paused. */
   pausedUntil: number;
 }
 export interface Gate { apply: boolean; state: OverrideState; why: string | null }
@@ -43,7 +43,7 @@ export function gate(state: OverrideState, cur: number, now: number, windowMs: n
 /**
  * The baseline to record after a write: the limit the host reports back after the write (the same value the next tick reads as `cur`),
  * or the requested value when the response has no read-back. Recording the requested value when the host lands elsewhere (a global cap, a clamp)
- * would make the next tick read a change Pacer did not make and start a back-off.
+ * would make the next tick read a change Coach did not make and start a back-off.
  */
 export function baselineAfterWrite(requested: number, landed: number | null | undefined): number {
   return landed ?? requested;

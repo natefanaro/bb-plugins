@@ -63,7 +63,7 @@ export const panelSchema = z.object({
 export type PanelView = z.infer<typeof panelSchema>;
 export type TurboView = z.infer<typeof turboViewSchema>;
 
-export const pacerRpcContract = defineRpcContract({
+export const coachRpcContract = defineRpcContract({
   panel: {
     input: z.null(),
     output: panelSchema,
