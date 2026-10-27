@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { cliCommand, defineCli, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { parseUsage, type Signals } from "./lib/policy.ts";
-import { getLimits, getUsage, readMemory, restoreLimits, setHostLimit, type HostCfg, type LimitCfg } from "./lib/io.ts";
+import { getLimits, getUsage, opencodeRunning, readMemory, restoreLimits, setHostLimit, type HostCfg, type LimitCfg } from "./lib/io.ts";
 import { memoryHot } from "./lib/memory.ts";
 import { tuningFrom } from "./lib/tuning.ts";
 import { weekProjected } from "./lib/policy.ts";
@@ -40,6 +40,8 @@ export default async function plugin(bb: BbPluginApi) {
     slackWeek: { type: "number", label: "Weekly use may run this many points ahead of time elapsed", default: 6 },
     raiseSlackWeek: { type: "number", label: "Weekly use points ahead of time elapsed that hold raising", default: 3 },
     pageoutHotPerSec: { type: "number", label: "Page-outs per second that count as thrashing (with swap)", default: 100 },
+    opencodeSlots: { type: "number", label: "opencode threads that get one slot of headroom each (0 turns it off)", default: 1 },
+    opencodeCountsAgainstLimit: { type: "boolean", label: "opencode threads take Claude capacity (no headroom)", default: false },
   });
 
   // The executor holds the back-off and Turbo (kept in plugin storage) and carries out each tick. See lib/executor.ts.
@@ -47,6 +49,7 @@ export default async function plugin(bb: BbPluginApi) {
     settings: () => settings.get(),
     limits: { get: getLimits, set: setHostLimit, restore: restoreLimits },
     usage: getUsage,
+    opencodeRunning,
     memory: readMemory,
     load: () => ({ load1: os.loadavg()[0], cpus: os.cpus().length || 1 }),
     now: () => Date.now(),
@@ -130,7 +133,22 @@ export default async function plugin(bb: BbPluginApi) {
       generatedAt: now,
       host,
       error,
-      limit: { current, min, max, globalLimit },
+      limit: {
+        current,
+        min,
+        max,
+        globalLimit,
+        claude: current === null ? null : current - exec.state().headroom,
+        opencode: {
+          headroom: exec.state().headroom,
+          running: exec.last()?.opencodeRunning ?? null,
+          slots: tuning.opencodeSlots,
+          countsAgainstLimit: s.opencodeCountsAgainstLimit === true,
+          warning: (exec.last()?.opencodeRunning ?? 0) > tuning.opencodeSlots && tuning.opencodeSlots > 0 && s.opencodeCountsAgainstLimit !== true
+            ? `${exec.last()?.opencodeRunning} opencode threads running; ${tuning.opencodeSlots} slot${tuning.opencodeSlots === 1 ? "" : "s"}. The extra use Claude capacity.`
+            : null,
+        },
+      },
       threads: { running, queued, gaveUp },
       why: {
         sentence: activeTurbo !== null ? turboSentence(activeTurbo) : reasonSentence(last, override.pausedUntil, now),

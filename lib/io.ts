@@ -2,6 +2,10 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
+import { countOpencodeRuns } from "./headroom.ts";
+
+const execFileP = promisify(execFile);
 import { NO_MEMORY, PAGING_SAMPLE_SEC, parseFreePct, parsePageoutsPerSec, parseSwapUsage, type MemoryReading } from "./memory.ts";
 
 const USAGE_INPUT = { force: false, machineIds: null, providerIds: ["claude-code"], maxAgeMs: 300_000 };
@@ -56,4 +60,10 @@ export async function readMemory(opts: { paging: boolean } = { paging: true }): 
     freePct: pressure === null ? null : parseFreePct(pressure),
     pageoutsPerSec: paging === null ? null : parsePageoutsPerSec(paging, PAGING_SAMPLE_SEC),
   };
+}
+
+/** opencode runs now (busy or queued), from the agent-tv feed across every project. Throws when the feed cannot be read: the executor then keeps the headroom in effect. */
+export async function opencodeRunning(): Promise<number> {
+  const { stdout } = await execFileP(process.env.BB_CLI || "bb", ["agent-tv", "status", "--all-projects", "--json"], { timeout: 15_000, maxBuffer: 8 * 1024 * 1024 });
+  return countOpencodeRuns(JSON.parse(stdout));
 }

@@ -183,6 +183,13 @@ function ConcurrencyCoachPage() {
               {limit.globalLimit !== null && ` · overall cap ${limit.globalLimit}`}
             </span>
           </div>
+          {(limit.opencode.headroom > 0 || (limit.opencode.running ?? 0) > 0) && (
+            <div className="text-xs text-muted-foreground">
+              Claude {limit.claude ?? "?"} + opencode {limit.opencode.headroom}
+              {limit.opencode.countsAgainstLimit && " (counts against the limit)"}
+            </div>
+          )}
+          {limit.opencode.warning !== null && <div className="text-xs text-destructive">{limit.opencode.warning}</div>}
         </div>
         <div className="text-right text-sm">
           <div>{threads.running ?? "?"} running</div>
@@ -293,6 +300,12 @@ function CoachWindow() {
         <div className={`ml-auto text-2xl font-medium tabular-nums ${colour}`}>{view.limit.current ?? "?"}</div>
       </div>
       <div className={`text-xs ${colour}`}>{label}</div>
+      {(view.limit.opencode.headroom > 0 || (view.limit.opencode.running ?? 0) > 0) && (
+        <div className="text-xs text-muted-foreground">
+          Claude {view.limit.claude ?? "?"} + opencode {view.limit.opencode.headroom}
+        </div>
+      )}
+      {view.limit.opencode.warning !== null && <div className="text-xs text-destructive">{view.limit.opencode.warning}</div>}
 
       <div className="flex flex-col gap-1 border-t pt-2">
         <div className="text-xs uppercase tracking-wide text-muted-foreground">Last decision</div>

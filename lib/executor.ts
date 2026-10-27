@@ -7,12 +7,15 @@ import type { HostCfg, LimitCfg } from "./io.ts";
 import { planTick } from "./tick.ts";
 import { NO_MEMORY, type MemoryReading } from "./memory.ts";
 import { tuningFrom, type Tuning } from "./tuning.ts";
+import { opencodeHeadroom, parseHeadroom } from "./headroom.ts";
 import {
   parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboSentence, turboStep, TURBO_DEFAULT_MS, type Turbo,
 } from "./turbo.ts";
 
 export interface CoachSettings extends Partial<Tuning> {
   enabled: boolean;
+  /** True: opencode threads take Claude capacity (no headroom). */
+  opencodeCountsAgainstLimit?: boolean;
   host: string;
   minLimit: number;
   maxLimit: number;
@@ -29,6 +32,8 @@ export interface Deps {
     restore(globalLimit: number | null, hostOverrides: { hostId: string; limit: number | null }[]): Promise<LimitCfg>;
   };
   usage(): Promise<unknown>;
+  /** Busy opencode threads now (providerId acp-opencode), or null when the count cannot be read. */
+  opencodeRunning(): Promise<number | null>;
   memory(): Promise<MemoryReading>;
   /** 1-minute load average and the CPU count. */
   load(): { load1: number; cpus: number };
@@ -39,14 +44,14 @@ export interface Deps {
   warn(message: string): void;
 }
 
-export interface Tick { applied: boolean; host: string; cur: number; next: number; why: string; signals: Signals; error?: string }
+export interface Tick { applied: boolean; host: string; cur: number; next: number; why: string; signals: Signals; error?: string; opencodeRunning: number | null; headroom: number }
 
 export interface Executor {
   tick(apply: boolean): Promise<Tick>;
   startTurboFrom(by: "cli" | "panel", limit: number | undefined, durationMs: number | undefined): Promise<{ turbo: Turbo; capRaised: boolean }>;
   endTurbo(by: "cli" | "panel" | "scheduler", reason: string): Promise<boolean>;
   /** The stored back-off and Turbo as the executor holds them. */
-  state(): { override: OverrideState; turbo: Turbo | null };
+  state(): { override: OverrideState; turbo: Turbo | null; headroom: number };
   last(): Tick | null;
   setLastError(error: string): void;
 }
@@ -54,7 +59,15 @@ export interface Executor {
 export async function createExecutor(deps: Deps): Promise<Executor> {
   let override: OverrideState = parseOverride(await deps.store.get("override")) ?? NO_OVERRIDE;
   let turbo: Turbo | null = parseTurbo(await deps.store.get("turbo"));
+  // The opencode headroom on the host now (a whole number). Kept apart from Claude's paced limit, so pacing never sees it.
+  let headroom: number = parseHeadroom(await deps.store.get("headroom"));
   let last: Tick | null = null;
+
+  async function setHeadroom(next: number): Promise<void> {
+    if (next === headroom) return;
+    headroom = next;
+    await deps.store.set("headroom", next);
+  }
 
   async function persistOverride(): Promise<void> {
     await deps.store.set("override", override);
@@ -110,6 +123,7 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     }
     if (restoredHost !== undefined && reason !== "manual limit change") override = { ...override, lastSet: restoredHost };
     await persistOverride();
+    await setHeadroom(0);
     logTurbo({ by, action: "end", reason: reason + capNote });
     return true;
   }
@@ -131,6 +145,7 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     const landed = t.limit !== cur ? await writeLimit(cfg, host.id, t.limit) : cur;
     override = { ...override, lastSet: baselineAfterWrite(t.limit, landed) };
     await persistOverride();
+    await setHeadroom(0);
     return { turbo: t, capRaised };
   }
 
@@ -147,13 +162,23 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     try { memory = await deps.memory(); } catch { /* memory unknown: not a signal */ }
     const tuning = tuningFrom(s);
     const thresholds = { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec };
-    const signals: Signals = { cur, min, max, loadRatio: load1 / cpus, ...usage, memory: { reading: memory, thresholds }, tuning };
     const now = deps.now();
+    // The opencode count only matters when it can add headroom. A failed read keeps the headroom in effect.
+    const countsOpencode = tuning.opencodeSlots > 0 && s.opencodeCountsAgainstLimit !== true;
+    let opencodeCount: number | null = null;
+    if (countsOpencode) { try { opencodeCount = await deps.opencodeRunning(); } catch { opencodeCount = null; } }
+    // A manual change makes the host limit a Claude-scale value: its headroom is dropped.
+    const manualChange = override.lastSet !== null && cur !== override.lastSet;
+    const storedHeadroom = manualChange ? 0 : headroom;
+    // Claude's paced limit is the host limit without the headroom. Pacing and the quota rules see only this.
+    const claudeCur = cur - storedHeadroom;
+    const signals: Signals = { cur: claudeCur, min, max, loadRatio: load1 / cpus, ...usage, memory: { reading: memory, thresholds }, tuning };
     // Turbo ends at the quota cap, on a manual change, at the weekly reset, or when its time box runs out.
-    const manual = turbo !== null && turboStep(override.lastSet, cur, turbo.limit).kind === "manual";
-    const endReason = turbo === null ? null : turboEndReason(turbo, now, usage.weekResetsAt, quotaNear(signals, tuning), manual);
+    const turboManual = turbo !== null && turboStep(override.lastSet, cur, turbo.limit).kind === "manual";
+    const endReason = turbo === null ? null : turboEndReason(turbo, now, usage.weekResetsAt, quotaNear(signals, tuning), turboManual);
     const g = gate(override, cur, now, Math.max(0, s.overrideBackoffMinutes) * 60_000);
-    const plan = planTick({ apply, cur, turbo, endReason, lastSet: override.lastSet, decision: decide(signals), gate: g });
+    // Turbo plans on the exact host limit; everything else plans on Claude's paced limit.
+    const plan = planTick({ apply, cur: turbo !== null ? cur : claudeCur, turbo, endReason, lastSet: override.lastSet, decision: decide({ ...signals, cur: turbo !== null ? cur : claudeCur }), gate: g });
 
     // A tick that ends Turbo restores first, then writes nothing; the next tick decides from fresh readings.
     if (plan.kind === "turbo-ended") {
@@ -165,26 +190,51 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
       }
     }
 
+    // The host limit to write. Turbo writes its exact limit. Otherwise it is Claude's target plus the opencode headroom, and nothing while backing off.
+    const plan0 = opencodeHeadroom({ running: opencodeCount, slots: tuning.opencodeSlots, countsAgainstLimit: s.opencodeCountsAgainstLimit === true, previous: storedHeadroom });
+    const newHeadroom = turbo !== null ? 0 : plan0.headroom;
+    let write: number | null = plan.write;
+    if (plan.kind === "normal" && apply && g.apply) {
+      const hostTarget = Math.min((plan.write ?? claudeCur) + newHeadroom, max + newHeadroom);
+      write = hostTarget !== cur ? hostTarget : null;
+    }
     let applied = false;
     let landed: number | undefined;
-    if (plan.write !== null) {
-      landed = await writeLimit(cfg, host.id, plan.write);
+    if (write !== null) {
+      landed = await writeLimit(cfg, host.id, write);
       applied = true;
+      await setHeadroom(turbo !== null ? 0 : newHeadroom);
+    } else if (manualChange) {
+      // No write after a manual change: the host limit is Claude-scale now, so no headroom is in effect.
+      await setHeadroom(0);
+    } else if (apply && plan.kind === "normal" && g.apply) {
+      // The host already sits at Claude's target plus the new headroom, so only the split changes (for example when opencode finishes).
+      await setHeadroom(newHeadroom);
     }
+    // The headroom in effect now (a Turbo end in this tick has already cleared it), and Claude's limit from the host limit.
+    const headroomNow = headroom;
+    const claudeNow = (write ?? cur) - headroomNow;
+
     // Only applied ticks commit override state; status (apply=false) changes nothing.
     if (apply && plan.kind === "turbo") {
       if (plan.step === "baseline") override = { ...override, lastSet: cur };
-      else if (plan.step === "write") override = { ...override, lastSet: applied ? baselineAfterWrite(plan.write ?? cur, landed) : cur };
+      else if (plan.step === "write") override = { ...override, lastSet: applied ? baselineAfterWrite(write ?? cur, landed) : cur };
       else override = { ...override, lastSet: cur };
     } else if (apply && plan.kind === "normal") {
       override = g.state;
-      if (g.apply) override = { ...override, lastSet: applied ? baselineAfterWrite(plan.write ?? cur, landed) : cur };
+      if (g.apply) override = { ...override, lastSet: applied ? baselineAfterWrite(write ?? cur, landed) : cur };
     }
-    last = { applied, host: host.name, cur, next: plan.next, why: plan.why, signals };
+
+    // The reason says Claude and opencode only when opencode is in play, so decisions with no opencode run read as before.
+    const warn = plan0.warn;
+    const opencodeNote = headroomNow > 0 || warn !== null ? ` · Claude ${claudeNow} + opencode ${headroomNow}${warn !== null ? ` (${warn})` : ""}` : "";
+    const why = `${plan.why}${opencodeNote}`;
+    const next = plan.kind === "turbo" ? plan.next : plan.next + headroomNow;
+    last = { applied, host: host.name, cur, next, why, signals, opencodeRunning: opencodeCount, headroom: headroomNow };
     if (apply) {
       await persistOverride();
       try {
-        deps.appendLog({ t: new Date(now).toISOString(), host: host.name, cur, next: plan.next, applied, why: plan.why, load: signals.loadRatio, fiveHourUsed: signals.fiveHourUsed, fiveHourElapsed: signals.fiveHourElapsed, weekUsed: signals.weekUsed, weekElapsed: signals.weekElapsed, memory: { swapUsedPct: memory.swapUsedPct, freePct: memory.freePct, pageoutsPerSec: memory.pageoutsPerSec }, override, turbo: plan.kind === "turbo" });
+        deps.appendLog({ t: new Date(now).toISOString(), host: host.name, cur, next, applied, why, load: signals.loadRatio, fiveHourUsed: signals.fiveHourUsed, fiveHourElapsed: signals.fiveHourElapsed, weekUsed: signals.weekUsed, weekElapsed: signals.weekElapsed, memory: { swapUsedPct: memory.swapUsedPct, freePct: memory.freePct, pageoutsPerSec: memory.pageoutsPerSec }, override, turbo: plan.kind === "turbo", opencodeRunning: opencodeCount, headroom: headroomNow });
       } catch (e) { deps.warn(`decision log not written: ${String(e)}`); }
     }
     return last;
@@ -194,7 +244,7 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     tick,
     startTurboFrom,
     endTurbo,
-    state: () => ({ override, turbo }),
+    state: () => ({ override, turbo, headroom }),
     last: () => last,
     setLastError: (error: string) => { last = { ...(last as Tick), error }; },
   };
