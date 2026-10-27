@@ -19,7 +19,9 @@
           "ref": "main"
         }
       },
-      "icon": "./icons/coach.svg"
+      "icon": {
+        "url": "./icons/coach.svg"
+      }
     }
   ]
 }
