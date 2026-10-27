@@ -79,12 +79,12 @@ function Quota({ label, used, elapsed, projected, state }: { label: string; used
   );
 }
 
-/** The limit as a step line over the 24 h window, with a dot per change. The axis spans the data we have, so a young log is not squashed at the right edge. Hover a dot for its reason. */
-function HistoryStrip({ view }: { view: PanelView }) {
+/** The limit as a line over the 24 h window, with a dot per change. The axis spans the data we have, so a young log is not squashed at the right edge. Hover a dot for its reason. Compact is the footer window: shorter, with a shaded area and one caption line. */
+function HistoryStrip({ view, compact = false }: { view: PanelView; compact?: boolean }) {
   const { points, changes } = view.history;
   if (points.length < 2) return <div className="text-xs text-muted-foreground">Collecting history…</div>;
   const width = 480;
-  const height = 60;
+  const height = compact ? 110 : 60;
   const limits = points.map((p) => p.limit);
   const lo = Math.min(...limits, view.limit.min);
   const hi = Math.max(...limits, view.limit.max);
@@ -94,17 +94,22 @@ function HistoryStrip({ view }: { view: PanelView }) {
   const since = new Date(view.generatedAt - oldestSec * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   const y = (v: number) => height - ((v - lo) / span) * (height - 6) - 3;
   const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(p.ageSec).toFixed(1)},${y(p.limit).toFixed(1)}`).join(" ");
+  const first = points[0];
+  const lastPoint = points[points.length - 1];
+  const area = `${path} L${x(lastPoint.ageSec).toFixed(1)},${height} L${x(first.ageSec).toFixed(1)},${height} Z`;
   return (
     <div className="flex flex-col gap-1">
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img" aria-label={`Thread limit since ${since}`}>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={compact ? undefined : height} role="img" aria-label={`Thread limit since ${since}`}>
+        {compact && <title>{`Limit since ${since} · ${changes.length} change${changes.length === 1 ? "" : "s"}`}</title>}
+        {compact && <path d={area} fill="currentColor" opacity={0.1} />}
         <path d={path} fill="none" stroke="currentColor" strokeWidth={1.5} />
         {changes.map((c) => (
-          <circle key={`${c.ageSec}-${c.to}`} cx={x(c.ageSec)} cy={y(c.to)} r={3} fill="currentColor">
+          <circle key={`${c.ageSec}-${c.to}`} cx={x(c.ageSec)} cy={y(c.to)} r={compact ? 2.5 : 3} fill="currentColor">
             <title>{`${c.from} → ${c.to}: ${c.why}`}</title>
           </circle>
         ))}
       </svg>
-      <div className="text-xs text-muted-foreground">Since {since}</div>
+      {!compact && <div className="text-xs text-muted-foreground">Since {since}</div>}
     </div>
   );
 }
@@ -222,9 +227,9 @@ function ConcurrencyCoachPage() {
             </span>
           </div>
           {inputs.load.ratio !== null && (
-            <Bar value={inputs.load.ratio} max={1.5} ticks={[0.5, 0.85]} tone={inputs.load.level === "hot" ? "bg-destructive" : "bg-primary"} />
+            <Bar value={inputs.load.ratio} max={Math.max(1.5, inputs.load.hot * 1.5)} ticks={[inputs.load.idle, inputs.load.hot]} tone={inputs.load.level === "hot" ? "bg-destructive" : "bg-primary"} />
           )}
-          <div className="text-xs text-muted-foreground">Ticks at 0.5 (idle) and 0.85 (hot).</div>
+          <div className="text-xs text-muted-foreground">Ticks at {inputs.load.idle} (idle) and {inputs.load.hot} (hot).</div>
         </div>
         <div className="flex flex-col gap-1">
           <div className="flex justify-between text-sm">
@@ -283,50 +288,93 @@ function CoachIcon({ className }: { className?: string }) {
   );
 }
 
-/** The footer window: the title and icon, the limit, the last decision and why, and both quota windows. Read-only; it fetches when opened. */
+/** One labelled gauge row: a short label, a bar, and the reading. A null value draws an empty bar and a question mark. */
+function GaugeRow({ label, value, max, ticks, markAt, tone, text, hint }: { label: string; value: number | null; max: number; ticks?: number[]; markAt?: number | null; tone: string; text: string; hint: string }) {
+  return (
+    <div className="grid grid-cols-[2.75rem_1fr_3rem] items-center gap-2 text-xs" title={hint}>
+      <span className="text-muted-foreground">{label}</span>
+      <Bar value={value ?? 0} max={max} ticks={ticks} markAt={markAt ?? undefined} tone={tone} />
+      <span className="text-right tabular-nums">{text}</span>
+    </div>
+  );
+}
+
+/** One cell per slot of the host limit: filled while a thread runs in it. The last cells are the opencode headroom, outlined. */
+function Slots({ view }: { view: PanelView }) {
+  const current = view.limit.current;
+  if (current === null) return null;
+  const cells = Math.min(current, 16);
+  const running = view.threads.running ?? 0;
+  const headroom = Math.min(view.limit.opencode.headroom, cells);
+  const queued = view.threads.queued ?? 0;
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex flex-1 flex-wrap gap-1" role="img" aria-label={`${running} of ${current} slots running`}>
+        {Array.from({ length: cells }, (_, i) => (
+          <div key={i} className={`h-3 w-3 rounded-sm ${i < running ? "bg-primary" : "bg-muted"} ${i >= cells - headroom ? "ring-1 ring-foreground/50" : ""}`} />
+        ))}
+      </div>
+      <div className="text-xs tabular-nums text-muted-foreground">
+        {view.threads.running ?? "?"}/{current}
+        {queued > 0 && <span className="ml-1 text-foreground">+{queued} waiting</span>}
+      </div>
+    </div>
+  );
+}
+
+/** The footer window: charts first. The limit and its slots, the 24 h line, both quota windows, CPU and memory, and the last decision in a line. Read-only; it fetches when opened. */
 function CoachWindow() {
   const { view, error } = usePanel();
   if (error !== null) return <div className="p-3 text-xs text-destructive">Concurrency Coach unavailable: {error}</div>;
   if (view === null) return <div className="p-3 text-xs text-muted-foreground">Loading…</div>;
   const { tone, label } = paceTone(view.inputs);
   const colour = tone === "ahead" ? "text-destructive" : tone === "within" ? "text-primary" : "text-muted-foreground";
+  const { fiveHour, week, load, memory } = view.inputs;
   const d = view.why.detail;
-  const m = view.inputs.memory;
+  const pct = (v: number | null) => (v === null ? "?" : `${Math.round(v)}%`);
+  const quotaTone = (state: typeof fiveHour.state) => (state === "ahead" ? "bg-destructive" : "bg-primary");
   return (
-    <div className="flex w-[22rem] max-w-full flex-col gap-3 p-3">
+    <div className="flex w-[22rem] max-w-full flex-col gap-2 p-3">
       <div className="flex items-center gap-2">
         <CoachIcon className="h-5 w-5 text-foreground" />
         <div className="text-sm font-medium">Concurrency Coach</div>
-        <div className={`ml-auto text-2xl font-medium tabular-nums ${colour}`}>{view.limit.current ?? "?"}</div>
+        <div className={`ml-auto text-2xl font-medium tabular-nums ${colour}`} title={label}>
+          {view.limit.current ?? "?"}
+        </div>
       </div>
-      <div className={`text-xs ${colour}`}>{label}</div>
       {(view.limit.opencode.headroom > 0 || (view.limit.opencode.running ?? 0) > 0) && (
-        <div className="text-xs text-muted-foreground">
+        <div className="-mt-2 text-right text-xs text-muted-foreground">
           Claude {view.limit.claude ?? "?"} + opencode {view.limit.opencode.headroom}
         </div>
       )}
       {view.limit.opencode.warning !== null && <div className="text-xs text-destructive">{view.limit.opencode.warning}</div>}
 
-      <div className="flex flex-col gap-1 border-t pt-2">
-        <div className="text-xs uppercase tracking-wide text-muted-foreground">Last decision</div>
-        <div className="text-sm">{view.why.sentence}</div>
-        {d !== null && (
-          <div className="text-xs text-muted-foreground">
-            {d.applied ? "Applied" : "Held"} {d.cur} → {d.next}
-            {d.load !== null && ` · load ${d.load.toFixed(2)} per core`}
-            {m !== null && m.freePct !== null && ` · free memory ${m.freePct}%`}
-            {m !== null && m.swapUsedPct !== null && ` · swap ${m.swapUsedPct}%`}
-          </div>
-        )}
-        <div className="text-xs text-muted-foreground">
-          {view.why.decidedAt === null ? "Nothing logged yet" : `Decided ${new Date(view.why.decidedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`}
-        </div>
-      </div>
+      <Slots view={view} />
+      <HistoryStrip view={view} compact />
 
       <div className="flex flex-col gap-2 border-t pt-2">
-        <div className="text-xs uppercase tracking-wide text-muted-foreground">Quota windows</div>
-        <Quota label="5-hour window" used={view.inputs.fiveHour.used} elapsed={view.inputs.fiveHour.elapsed} projected={view.inputs.fiveHour.projected} state={view.inputs.fiveHour.state} />
-        <Quota label="Weekly window" used={view.inputs.week.used} elapsed={view.inputs.week.elapsed} projected={view.inputs.week.projected} state={view.inputs.week.state} />
+        <GaugeRow label="5 h" value={fiveHour.used} max={100} markAt={fiveHour.elapsed} tone={quotaTone(fiveHour.state)} text={pct(fiveHour.used)} hint="5-hour quota used. The marker is time elapsed in the window; red when use runs ahead of it." />
+        <GaugeRow label="Week" value={week.used} max={100} markAt={week.elapsed} tone={quotaTone(week.state)} text={pct(week.used)} hint="Weekly quota used. The marker is time elapsed in the week; red when use runs ahead of it." />
+        <GaugeRow
+          label="CPU"
+          value={load.ratio}
+          max={Math.max(1.5, load.hot * 1.5)}
+          ticks={[load.idle, load.hot]}
+          tone={load.level === "hot" ? "bg-destructive" : "bg-primary"}
+          text={load.ratio === null ? "?" : load.ratio.toFixed(2)}
+          hint={`CPU load per core. Ticks at ${load.idle} (idle) and ${load.hot} (hot).`}
+        />
+        <GaugeRow label="Memory" value={memory.freePct} max={100} ticks={[memory.memFreeMinPercent]} tone={memory.hot ? "bg-destructive" : "bg-primary"} text={pct(memory.freePct)} hint={`Free memory. The tick is the ${memory.memFreeMinPercent}% pressure line.`} />
+      </div>
+
+      <div className="flex flex-col gap-0.5 border-t pt-2">
+        <div className="truncate text-sm" title={view.why.sentence}>
+          {view.why.sentence}
+        </div>
+        <div className="text-xs text-muted-foreground">
+          {d !== null && `${d.applied ? "Applied" : "Held"} ${d.cur} → ${d.next} · `}
+          {view.why.decidedAt === null ? "Nothing logged yet" : clock(Date.parse(view.why.decidedAt))}
+        </div>
       </div>
     </div>
   );

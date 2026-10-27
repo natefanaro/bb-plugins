@@ -71,7 +71,7 @@ export const panelSchema = z.object({
   }),
   turbo: turboViewSchema,
   inputs: z.object({
-    load: z.object({ ratio: z.number().nullable(), level: z.enum(["idle", "ok", "hot"]).nullable() }),
+    load: z.object({ ratio: z.number().nullable(), level: z.enum(["idle", "ok", "hot"]).nullable(), /** CPU load per core below which the limit steps up, and above which it steps down (the tunables). */ idle: z.number(), hot: z.number() }),
     memory: z.object({ swapUsedPct: z.number().nullable(), freePct: z.number().nullable(), pageoutsPerSec: z.number().nullable(), hot: z.boolean(), swapHotPercent: z.number(), memFreeMinPercent: z.number() }),
     fiveHour: pace,
     week: pace,

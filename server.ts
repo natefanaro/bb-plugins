@@ -167,7 +167,7 @@ export default async function plugin(bb: BbPluginApi) {
       },
       turbo: turboNow,
       inputs: {
-        load: { ratio: loadRatio, level: loadLevel(loadRatio, tuning) },
+        load: { ratio: loadRatio, level: loadLevel(loadRatio, tuning), idle: tuning.idleLoad, hot: tuning.hotLoad },
         memory: { swapUsedPct: memory.swapUsedPct, freePct: memory.freePct, pageoutsPerSec: memory.pageoutsPerSec, hot: memoryHot(memory, { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec }), swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent },
         fiveHour: { used: usage.fiveHourUsed, elapsed: usage.fiveHourElapsed, projected: projectedOf(usage.fiveHourUsed, usage.fiveHourElapsed), state: paceState(usage.fiveHourUsed, usage.fiveHourElapsed, tuning.slackFiveHour) },
         week: { used: usage.weekUsed, elapsed: usage.weekElapsed, projected: projectedOf(usage.weekUsed, usage.weekElapsed), state: weekPaceState(usage.weekUsed, usage.weekElapsed, tuning.slackWeek) },
