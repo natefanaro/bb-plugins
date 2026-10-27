@@ -113,9 +113,10 @@ Every applied tick (scheduled or from `tick`) appends one JSON line to `~/.bb-st
 
 ## Panel
 
-The **Concurrency Coach** page in the rail is read-only. It shows the current limit and range, the overall cap, running and queued threads, a plain-sentence reason (with minutes left if backing off), CPU load per core against the 0.5 and 0.85 thresholds, free memory, swap and paging against their thresholds, the 5-hour and weekly quota used against time elapsed, a 24-hour strip of the limit with each change marked (hover for its reason), and the top process by CPU name.
+The **Concurrency Coach** page in the rail is read-only. It shows the current limit and range, the overall cap, running and queued threads, a plain-sentence reason (with minutes left if backing off), CPU load per core against its idle and hot thresholds, free memory, swap and paging against their thresholds, the 5-hour and weekly quota used against time elapsed, a 24-hour strip of the limit with each change marked (hover for its reason), and the top process by CPU name.
 
 - Running is threads occupying a slot now (starting or active, hidden included), counted without a cap. Queued is queued messages that the concurrency limit is holding and still waiting or retrying; messages that gave up are shown separately as "failed after retries".
+- **What limits it** is one line that says whether the limit is held by capacity (memory, or CPU) or by quota (pace), from the current readings (the same ones the policy reads), for example `Held by quota (pace: week 53% used vs 44% of the week elapsed). Not memory: it has room (free memory 70%, swap 40%).` It also says when both apply, when quota is near its cap (the limit is at the minimum), and when Turbo is holding the limit. Swap alone is not memory pressure: free memory under `memFreeMinPercent`, or swap at `swapHotPercent` or more while paging out, is. The memory section shows free memory and swap as two bars against those lines. The footer window shows the same line in place of the reason sentence.
 - "Last decision" is the newest logged decision and when it was made. It can be older than the live load; the inputs section shows the live load.
 - It refreshes at most every five minutes, the scheduler tick, and on Refresh. It has no controls.
 - Colours come from the host theme, so it follows light and dark.
