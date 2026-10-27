@@ -203,7 +203,13 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     if (write !== null) {
       landed = await writeLimit(cfg, host.id, write);
       applied = true;
-      await setHeadroom(turbo !== null ? 0 : newHeadroom);
+      let storeHeadroom = turbo !== null ? 0 : newHeadroom;
+      if (plan.kind === "normal" && apply && g.apply && landed !== undefined) {
+        // The overall cap can clamp the write. Store only the headroom that landed above Claude's target, so Claude's limit is not read low. An unknown landed value keeps the requested headroom.
+        const claudeWritten = Math.min(plan.write ?? claudeCur, max);
+        storeHeadroom = Math.max(0, Math.min(newHeadroom, landed - claudeWritten));
+      }
+      await setHeadroom(storeHeadroom);
     } else if (manualChange) {
       // No write after a manual change: the host limit is Claude-scale now, so no headroom is in effect.
       await setHeadroom(0);
@@ -213,7 +219,7 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     }
     // The headroom in effect now (a Turbo end in this tick has already cleared it), and Claude's limit from the host limit.
     const headroomNow = headroom;
-    const claudeNow = (write ?? cur) - headroomNow;
+    const claudeNow = (landed ?? write ?? cur) - headroomNow;
 
     // Only applied ticks commit override state; status (apply=false) changes nothing.
     if (apply && plan.kind === "turbo") {

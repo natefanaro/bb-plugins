@@ -363,3 +363,25 @@ test("opencode: the headroom survives a reload, and the next write keeps Claude'
   await reloaded.tick(true);
   assert.deepEqual(w.writes, [6, 7], "Claude 5 -> 6 plus one slot");
 });
+test("opencode: an overall cap that clamps the write stores only the headroom that landed", async () => {
+  // Claude paces 4 -> 5 and asks the host for 5 + 1 = 6, but the overall cap is 5: the host lands on 5.
+  const w = world({ limit: 4, globalLimit: 5, opencode: 1 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const d = deps(w);
+  d.limits.set = async (_c, _hostId, limit) => {
+    w.writes.push(limit);
+    w.limit = Math.min(limit, w.globalLimit); // the cap clamps the write
+    return cfg(w);
+  };
+  const e = await createExecutor(d);
+  const t = await e.tick(true);
+  assert.deepEqual(w.writes, [6]);
+  assert.equal(w.limit, 5, "the host landed on 5");
+  assert.equal(e.state().headroom, 0, "no headroom landed above Claude's 5");
+  assert.equal(t.headroom, 0);
+  assert.doesNotMatch((w.logs[0] as { why: string }).why, /opencode/, "the reason does not claim a slot that did not land");
+  // Claude's limit is not read low: with no headroom stored, the host's 5 is Claude's 5 on the next tick.
+  idleTick(w);
+  await e.tick(true);
+  assert.equal(e.state().headroom, 0);
+});

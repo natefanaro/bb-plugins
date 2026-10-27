@@ -16,7 +16,7 @@ Every 5 minutes it reads two signals and applies one of these rules:
 | CPU idle | 1-minute load below 50% of the core count | Step up, unless a weekly rule holds it |
 | Otherwise | | Hold |
 
-The limit never leaves `[minLimit, maxLimit]`. If the quota can't be read, Concurrency Coach scales on CPU alone. Memory is read from the Mac's `memory_pressure` (free memory), `sysctl vm.swapusage` (swap), and `vm_stat -c 2 5` (paging, a five-second sample; this adds about five seconds to a tick). A reading that fails is not a signal, and the rest still applies.
+Claude's paced limit never leaves `[minLimit, maxLimit]`. The host limit can be higher: while opencode threads run, it adds their headroom (up to `opencodeSlots` above `maxLimit`, see [opencode threads](#opencode-threads)). An overall cap can clamp the write lower, and Coach then stores only the headroom that landed. If the quota can't be read, Concurrency Coach scales on CPU alone. Memory is read from the Mac's `memory_pressure` (free memory), `sysctl vm.swapusage` (swap), and `vm_stat -c 2 5` (paging, a five-second sample; this adds about five seconds to a tick). A reading that fails is not a signal, and the rest still applies.
 
 Free memory is the primary signal. Swap alone is not pressure: macOS keeps swap after a spike and does not give it back, so a host can sit at 95% swap with plenty of free memory and no paging. Swap counts only while the host is also paging out. Page-ins are not counted, because a healthy Mac pages in at several hundred per second.
 
