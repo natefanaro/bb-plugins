@@ -6,6 +6,7 @@ import { createExecutor, type Deps, type CoachSettings } from "./executor.ts";
 import type { LogLine } from "./decision-log.ts";
 import type { LimitCfg } from "./io.ts";
 import type { MemoryReading } from "./memory.ts";
+import type { UrgentCount } from "./urgent.ts";
 
 const MIN = 60_000;
 const T0 = Date.parse("2026-10-24T22:00:00Z");
@@ -26,6 +27,8 @@ interface World {
   settings: CoachSettings;
   /** Busy opencode threads the fake feed reports, or null for an unreadable feed. */
   opencode: number | null;
+  /** Urgent threads the fake feed reports, or null for an unreadable one. */
+  urgent: UrgentCount | null;
 }
 
 function world(over: Partial<World> = {}): World {
@@ -33,6 +36,7 @@ function world(over: Partial<World> = {}): World {
     limit: 4,
     globalLimit: 8,
     opencode: 0,
+    urgent: { running: 0, waiting: 0 },
     writes: [],
     restores: 0,
     now: T0,
@@ -76,6 +80,7 @@ function deps(w: World): Deps {
     },
     usage: async () => null, // quota unknown: the CPU rule and the memory rule are what is tested here
     opencodeRunning: async () => w.opencode,
+    urgent: async () => w.urgent,
     memory: async () => w.memory,
     load: () => ({ load1: w.load1, cpus: w.cpus }),
     now: () => w.now,
@@ -496,4 +501,261 @@ test("turbo start is not blocked by high swap alone", async () => {
   await e.tick(true);
   await e.startTurboFrom("panel", 6, 30 * MIN);
   assert.notEqual(e.state().turbo, null);
+});
+
+// --- The urgent lane: threads whose task is urgent get slots above Claude's paced limit.
+const openGate = (w: World) => w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+
+test("urgent: none waiting or running, the decision, the write and the reason are as before", async () => {
+  const w = world({ limit: 4 });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [5]);
+  assert.doesNotMatch((w.logs[0] as { why: string }).why, /urgent/);
+  assert.equal(e.state().urgentHeadroom, 0);
+});
+test("urgent: one waiting gets a slot above Claude's pace; Claude's decision is unchanged", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  const t = await e.tick(true);
+  assert.deepEqual(w.writes, [6], "Claude 5 + urgent 1");
+  assert.equal(e.state().headroom, 1);
+  assert.equal(e.state().urgentHeadroom, 1);
+  assert.equal(t.urgentHeadroom, 1);
+  assert.match((w.logs[0] as { why: string }).why, /Claude 5 \+ urgent 1/);
+  assert.doesNotMatch((w.logs[0] as { why: string }).why, /opencode/);
+  assert.equal(w.store.get("headroom"), 1, "the total stays under the old key");
+  assert.equal(w.store.get("urgentHeadroom"), 1);
+  // Next tick: Claude's paced limit is the host limit minus the lane (5), so it steps to 6 and the host to 7.
+  idleTick(w);
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6, 7]);
+});
+test("urgent: a running urgent thread keeps its slot", async () => {
+  const w = world({ limit: 4, urgent: { running: 1, waiting: 0 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6]);
+});
+test("urgent: two waiting with one slot is capped at one", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 2 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6]);
+});
+test("urgent: both lanes add up, and the reason names both", async () => {
+  const w = world({ limit: 4, opencode: 1, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [7], "Claude 5 + opencode 1 + urgent 1");
+  assert.equal(e.state().headroom, 2);
+  assert.equal(e.state().urgentHeadroom, 1);
+  assert.match((w.logs[0] as { why: string }).why, /Claude 5 \+ opencode 1 \+ urgent 1/);
+});
+test("urgent: urgentSlots 0 turns the lane off and the feed is not read", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 3 }, settings: { ...world().settings, urgentSlots: 0 } });
+  openGate(w);
+  let reads = 0;
+  const d = deps(w);
+  d.urgent = async () => { reads++; return w.urgent; };
+  const e = await createExecutor(d);
+  await e.tick(true);
+  assert.deepEqual(w.writes, [5]);
+  assert.equal(reads, 0);
+});
+test("urgent: a bad urgentSlots falls back to one slot", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 }, settings: { ...world().settings, urgentSlots: 99 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6]);
+});
+test("urgent: when the urgent work is gone the slot is dropped without moving the host limit", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true); // host 6, lane 1
+  w.urgent = { running: 0, waiting: 0 };
+  w.load1 = 4; // CPU in the middle band: Claude holds at 5
+  w.now += 5 * MIN;
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6], "no write: the host stays at 6");
+  assert.equal(e.state().urgentHeadroom, 0);
+  assert.equal(e.state().headroom, 0, "the split changed: 6 is now Claude's");
+});
+test("urgent: an unreadable count keeps the lane as it was", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  w.urgent = null;
+  w.load1 = 4;
+  w.now += 5 * MIN;
+  await e.tick(true);
+  assert.equal(e.state().urgentHeadroom, 1);
+});
+test("urgent: a count that throws keeps the lane as it was", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const d = deps(w);
+  const e = await createExecutor(d);
+  await e.tick(true);
+  d.urgent = async () => { throw new Error("tasks down"); };
+  w.load1 = 4;
+  w.now += 5 * MIN;
+  await e.tick(true);
+  assert.equal(e.state().urgentHeadroom, 1);
+});
+test("urgent: Turbo writes its exact limit with no lane; a manual change drops the lane", async () => {
+  const w = world({ limit: 4, globalLimit: 8, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true); // host 6, lane 1
+  await e.startTurboFrom("cli", 7, undefined);
+  assert.equal(e.state().headroom, 0);
+  assert.equal(e.state().urgentHeadroom, 0);
+  await e.endTurbo("cli", "off");
+  const w2 = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w2);
+  const e2 = await createExecutor(deps(w2));
+  await e2.tick(true);
+  w2.limit = 3; // set by hand
+  w2.now += 5 * MIN;
+  await e2.tick(true);
+  assert.equal(e2.state().urgentHeadroom, 0);
+  assert.equal(e2.state().headroom, 0);
+});
+test("urgent: when the overall cap clamps the write, the urgent slot is kept before the opencode slot", async () => {
+  // Claude 5, opencode 1, urgent 1 asks for 7; the cap lands 6: one slot above Claude, and it is the urgent one.
+  const w = world({ limit: 4, globalLimit: 6, opencode: 1, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const d = deps(w);
+  d.limits.set = async (_c, _id, limit) => { w.writes.push(limit); w.limit = Math.min(limit, w.globalLimit); return cfg(w); };
+  const e = await createExecutor(d);
+  await e.tick(true);
+  assert.equal(w.limit, 6);
+  assert.equal(e.state().headroom, 1);
+  assert.equal(e.state().urgentHeadroom, 1);
+});
+test("urgent: the lane survives a reload", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  await (await createExecutor(deps(w))).tick(true);
+  const reloaded = await createExecutor(deps(w));
+  assert.equal(reloaded.state().headroom, 1);
+  assert.equal(reloaded.state().urgentHeadroom, 1);
+});
+test("urgent: a record from an older build (total headroom only) reads as all opencode", async () => {
+  const w = world({ limit: 6, opencode: 1 });
+  w.store.set("override", { lastSet: 6, pausedUntil: 0 });
+  w.store.set("headroom", 1);
+  const e = await createExecutor(deps(w));
+  assert.equal(e.state().urgentHeadroom, 0);
+  await e.tick(true);
+  assert.equal(e.state().headroom, 1);
+});
+test("urgent: the decision log carries the urgent figures only when the lane is on", async () => {
+  const w = world({ limit: 4, urgent: { running: 1, waiting: 2 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  const rec = w.logs[0] as { urgentRunning?: number; urgentWaiting?: number; urgentHeadroom?: number };
+  assert.deepEqual([rec.urgentRunning, rec.urgentWaiting, rec.urgentHeadroom], [1, 2, 1]);
+  const w2 = world({ limit: 4, settings: { ...world().settings, urgentSlots: 0 } });
+  openGate(w2);
+  await (await createExecutor(deps(w2))).tick(true);
+  assert.equal("urgentWaiting" in (w2.logs[0] as object), false);
+});
+
+const URGENT_WAIT_MIN = 120;
+test("urgent: work waiting at least urgentReportMinutes is flagged starved in the reason and the tick", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  let t = await e.tick(true);
+  assert.equal(t.urgentStarved, false);
+  assert.equal(t.urgentSince, w.now);
+  w.now += (URGENT_WAIT_MIN - 5) * MIN;
+  t = await e.tick(true);
+  assert.equal(t.urgentStarved, false, "just under the report time");
+  w.now += 5 * MIN;
+  t = await e.tick(true);
+  assert.equal(t.urgentStarved, true);
+  assert.match(t.why, /urgent work has waited 2 h 0 min/);
+});
+test("urgent: the wait clock clears when nothing waits, and survives a reload", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  const since = w.now;
+  w.now += 60 * MIN;
+  const reloaded = await createExecutor(deps(w));
+  assert.equal(reloaded.state().urgentSince, since, "stored across a reload");
+  w.urgent = { running: 1, waiting: 0 };
+  w.now += 5 * MIN;
+  const t = await reloaded.tick(true);
+  assert.equal(t.urgentSince, null);
+  assert.equal(w.store.has("urgentWaitSince"), false);
+});
+test("urgent: urgentReportMinutes 0 never flags", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 }, settings: { ...world().settings, urgentReportMinutes: 0 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  w.now += 24 * 60 * MIN;
+  const t = await e.tick(true);
+  assert.equal(t.urgentStarved, false);
+});
+test("urgent: status (apply false) reads the lane but stores and logs nothing", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const before = JSON.stringify([...w.store.entries()]);
+  const e = await createExecutor(deps(w));
+  await e.tick(false);
+  assert.equal(JSON.stringify([...w.store.entries()]), before);
+  assert.deepEqual(w.writes, []);
+  assert.equal(w.logs.length, 0);
+});
+
+test("urgent: an unreadable count is shown in the reason, the tick and the log, and the lane keeps its state", async () => {
+  const w = world({ limit: 4, urgent: { running: 0, waiting: 1 } });
+  openGate(w);
+  const d = deps(w);
+  const e = await createExecutor(d);
+  await e.tick(true);
+  assert.equal(e.state().urgentHeadroom, 1);
+  d.urgent = async () => { throw new Error("project_ambiguous"); };
+  w.load1 = 4;
+  w.now += 5 * MIN;
+  const t = await e.tick(true);
+  assert.equal(t.urgentUnreadable, true);
+  assert.match(t.why, /urgent: unreadable$/);
+  assert.equal(e.state().urgentHeadroom, 1, "the lane keeps its last state");
+  const rec = w.logs[w.logs.length - 1] as { urgentUnreadable?: boolean };
+  assert.equal(rec.urgentUnreadable, true);
+});
+test("urgent: a null count counts as unreadable too, and a readable one does not", async () => {
+  const w = world({ limit: 4, urgent: null });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  assert.equal((await e.tick(true)).urgentUnreadable, true);
+  w.urgent = { running: 0, waiting: 0 };
+  w.now += 5 * MIN;
+  const t = await e.tick(true);
+  assert.equal(t.urgentUnreadable, false);
+  assert.doesNotMatch(t.why, /unreadable/);
+});
+test("urgent: with the lane off nothing is unreadable", async () => {
+  const w = world({ limit: 4, urgent: null, settings: { ...world().settings, urgentSlots: 0 } });
+  openGate(w);
+  const e = await createExecutor(deps(w));
+  const t = await e.tick(true);
+  assert.equal(t.urgentUnreadable, false);
+  assert.equal("urgentUnreadable" in (w.logs[0] as object), false);
 });

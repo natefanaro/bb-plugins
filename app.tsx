@@ -199,10 +199,22 @@ function ConcurrencyCoachPage() {
               {limit.globalLimit !== null && ` · overall cap ${limit.globalLimit}`}
             </span>
           </div>
-          {(limit.opencode.headroom > 0 || (limit.opencode.running ?? 0) > 0) && (
+          {(limit.opencode.headroom > 0 || (limit.opencode.running ?? 0) > 0 || limit.urgent.headroom > 0) && (
             <div className="text-xs text-muted-foreground">
               Claude {limit.claude ?? "?"} + opencode {limit.opencode.headroom}
+              {limit.urgent.headroom > 0 && ` + urgent ${limit.urgent.headroom}`}
               {limit.opencode.countsAgainstLimit && " (counts against the limit)"}
+            </div>
+          )}
+          {(limit.urgent.running ?? 0) + (limit.urgent.waiting ?? 0) > 0 && (
+            <div className="text-xs text-muted-foreground">
+              Urgent threads: {limit.urgent.running ?? 0} running, {limit.urgent.waiting ?? 0} waiting · {limit.urgent.slots} reserved slot{limit.urgent.slots === 1 ? "" : "s"}
+            </div>
+          )}
+          {limit.urgent.unreadable && <div className="text-xs text-destructive">Urgent: unreadable. The lane keeps its last state until the tasks can be read.</div>}
+          {limit.urgent.starved && limit.urgent.waitingSince !== null && (
+            <div className="text-xs text-destructive">
+              Urgent work has been waiting since {new Date(limit.urgent.waitingSince).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} (over {limit.urgent.reportMinutes} min).
             </div>
           )}
           {limit.opencode.warning !== null && <div className="text-xs text-destructive">{limit.opencode.warning}</div>}
@@ -318,19 +330,20 @@ function GaugeRow({ label, value, max, ticks, markAt, tone, text, hint }: { labe
   );
 }
 
-/** One cell per slot of the host limit: filled while a thread runs in it. The last cells are the opencode headroom, outlined. */
+/** One cell per slot of the host limit: filled while a thread runs in it. The last cells are the headroom: opencode slots outlined, urgent slots with a heavier ring. */
 function Slots({ view }: { view: PanelView }) {
   const current = view.limit.current;
   if (current === null) return null;
   const cells = Math.min(current, 16);
   const running = view.threads.running ?? 0;
-  const headroom = Math.min(view.limit.opencode.headroom, cells);
+  const urgentCells = Math.min(view.limit.urgent.headroom, cells);
+  const headroom = Math.min(view.limit.opencode.headroom + urgentCells, cells);
   const queued = view.threads.queued ?? 0;
   return (
     <div className="flex items-center gap-2">
       <div className="flex flex-1 flex-wrap gap-1" role="img" aria-label={`${running} of ${current} slots running`}>
         {Array.from({ length: cells }, (_, i) => (
-          <div key={i} className={`h-3 w-3 rounded-sm ${i < running ? "bg-primary" : "bg-muted"} ${i >= cells - headroom ? "ring-1 ring-foreground/50" : ""}`} />
+          <div key={i} className={`h-3 w-3 rounded-sm ${i < running ? "bg-primary" : "bg-muted"} ${i >= cells - urgentCells ? "ring-2 ring-primary" : i >= cells - headroom ? "ring-1 ring-foreground/50" : ""}`} />
         ))}
       </div>
       <div className="text-xs tabular-nums text-muted-foreground">
@@ -361,11 +374,14 @@ function CoachWindow() {
           {view.limit.current ?? "?"}
         </div>
       </div>
-      {(view.limit.opencode.headroom > 0 || (view.limit.opencode.running ?? 0) > 0) && (
+      {(view.limit.opencode.headroom > 0 || (view.limit.opencode.running ?? 0) > 0 || view.limit.urgent.headroom > 0) && (
         <div className="-mt-2 text-right text-xs text-muted-foreground">
           Claude {view.limit.claude ?? "?"} + opencode {view.limit.opencode.headroom}
+          {view.limit.urgent.headroom > 0 && ` + urgent ${view.limit.urgent.headroom}`}
         </div>
       )}
+      {view.limit.urgent.unreadable && <div className="text-xs text-destructive">Urgent: unreadable.</div>}
+      {view.limit.urgent.starved && <div className="text-xs text-destructive">Urgent work waiting over {view.limit.urgent.reportMinutes} min.</div>}
       {view.limit.opencode.warning !== null && <div className="text-xs text-destructive">{view.limit.opencode.warning}</div>}
 
       <Slots view={view} />

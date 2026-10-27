@@ -21,6 +21,10 @@ export interface Tuning {
   opencodeSlots: number;
   /** Optional extra: swap used (percent) at or above which Turbo ends, on top of the memory-pressure rule. 0 (the default) leaves it off. */
   turboSwapEndPercent: number;
+  /** Slots reserved above the paced limit for threads whose task is urgent. 0 turns the lane off. */
+  urgentSlots: number;
+  /** Minutes urgent work may wait before it is flagged as starved. 0 never flags. */
+  urgentReportMinutes: number;
 }
 
 export const DEFAULT_TUNING: Tuning = {
@@ -34,6 +38,8 @@ export const DEFAULT_TUNING: Tuning = {
   pageoutHotPerSec: 100,
   opencodeSlots: 1,
   turboSwapEndPercent: 0,
+  urgentSlots: 1,
+  urgentReportMinutes: 120,
 };
 
 /** Each tunable's range. A value outside it, or not a finite number, falls back to its default. Percent thresholds are 1 to 100 (0 would pin the limit to the minimum), except the Turbo swap end line, which is 0 (off) or 50 to 100; slacks are 0 to 100; loads are above 0; page-outs are 0 or more. */
@@ -48,6 +54,8 @@ const VALID: Record<keyof Tuning, (v: number) => boolean> = {
   pageoutHotPerSec: (v) => v >= 0,
   opencodeSlots: (v) => Number.isInteger(v) && v >= 0 && v <= 10,
   turboSwapEndPercent: (v) => v === 0 || (v >= 50 && v <= 100),
+  urgentSlots: (v) => Number.isInteger(v) && v >= 0 && v <= 5,
+  urgentReportMinutes: (v) => Number.isInteger(v) && v >= 0 && v <= 1440,
 };
 
 /**
@@ -70,6 +78,8 @@ export function tuningFrom(s: Partial<Record<keyof Tuning, unknown>>): Tuning {
     pageoutHotPerSec: pick("pageoutHotPerSec"),
     opencodeSlots: pick("opencodeSlots"),
     turboSwapEndPercent: pick("turboSwapEndPercent"),
+    urgentSlots: pick("urgentSlots"),
+    urgentReportMinutes: pick("urgentReportMinutes"),
   };
   if (!(t.idleLoad < t.hotLoad)) {
     t.idleLoad = DEFAULT_TUNING.idleLoad;

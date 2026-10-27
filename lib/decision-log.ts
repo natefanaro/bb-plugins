@@ -22,6 +22,12 @@ export interface DecisionRecord {
   /** Busy opencode threads at this tick, and the opencode headroom on the host after it. Absent on lines written before this change. */
   opencodeRunning?: number | null;
   headroom?: number;
+  /** The urgent lane at this tick (only when the lane is on): urgent threads running and waiting, and the lane's slots in effect after it. */
+  urgentRunning?: number | null;
+  urgentWaiting?: number | null;
+  urgentHeadroom?: number;
+  /** Set when the urgent lane is on but its count could not be read at this tick. */
+  urgentUnreadable?: boolean;
   override: { lastSet: number | null; pausedUntil: number };
   /** True when the tick was made under an active Turbo (lines written before Turbo have no field). */
   turbo?: boolean;

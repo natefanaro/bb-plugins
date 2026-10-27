@@ -8,6 +8,7 @@ import { planTick } from "./tick.ts";
 import { NO_MEMORY, type MemoryReading } from "./memory.ts";
 import { tuningFrom, type Tuning } from "./tuning.ts";
 import { opencodeHeadroom, parseHeadroom } from "./headroom.ts";
+import { parseWaitSince, urgentHeadroom, urgentWait, type UrgentCount } from "./urgent.ts";
 import {
   parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboMemoryEndReason, turboSentence, turboStartBlock, turboStep, TURBO_DEFAULT_MS, type Turbo,
 } from "./turbo.ts";
@@ -34,6 +35,8 @@ export interface Deps {
   usage(): Promise<unknown>;
   /** Busy opencode threads now (providerId acp-opencode), or null when the count cannot be read. */
   opencodeRunning(): Promise<number | null>;
+  /** Urgent threads now (their task has priority urgent): running and waiting behind the limit. Null when it cannot be read. */
+  urgent(): Promise<UrgentCount | null>;
   memory(): Promise<MemoryReading>;
   /** 1-minute load average and the CPU count. */
   load(): { load1: number; cpus: number };
@@ -44,14 +47,18 @@ export interface Deps {
   warn(message: string): void;
 }
 
-export interface Tick { applied: boolean; host: string; cur: number; next: number; why: string; signals: Signals; error?: string; opencodeRunning: number | null; headroom: number }
+export interface Tick { applied: boolean; host: string; cur: number; next: number; why: string; signals: Signals; error?: string; opencodeRunning: number | null; headroom: number;
+  /** Urgent threads now, the slots of the urgent lane in effect, and when urgent work first waited (null when none waits). */
+  urgent: UrgentCount | null; urgentHeadroom: number; urgentSince: number | null; urgentStarved: boolean;
+  /** The urgent lane is on but its count could not be read this tick; the lane stays as it was. */
+  urgentUnreadable: boolean }
 
 export interface Executor {
   tick(apply: boolean): Promise<Tick>;
   startTurboFrom(by: "cli" | "panel", limit: number | undefined, durationMs: number | null | undefined): Promise<{ turbo: Turbo; capRaised: boolean }>;
   endTurbo(by: "cli" | "panel" | "scheduler", reason: string): Promise<boolean>;
   /** The stored back-off and Turbo as the executor holds them. */
-  state(): { override: OverrideState; turbo: Turbo | null; headroom: number };
+  state(): { override: OverrideState; turbo: Turbo | null; headroom: number; urgentHeadroom: number; urgentSince: number | null };
   last(): Tick | null;
   setLastError(error: string): void;
 }
@@ -61,12 +68,16 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
   let turbo: Turbo | null = parseTurbo(await deps.store.get("turbo"));
   // The opencode headroom on the host now (a whole number). Kept apart from Claude's paced limit, so pacing never sees it.
   let headroom: number = parseHeadroom(await deps.store.get("headroom"));
+  // The urgent lane's part of that headroom, and when urgent work first began waiting.
+  let urgentLane: number = Math.min(parseHeadroom(await deps.store.get("urgentHeadroom")), headroom);
+  let waitSince: number | null = parseWaitSince(await deps.store.get("urgentWaitSince"));
   let last: Tick | null = null;
 
-  async function setHeadroom(next: number): Promise<void> {
-    if (next === headroom) return;
-    headroom = next;
-    await deps.store.set("headroom", next);
+  /** Store the total headroom (opencode + urgent) and the urgent part of it. The total stays under the old key, so an older build still reads it. */
+  async function setHeadroom(next: number, urgent = 0): Promise<void> {
+    const u = Math.min(urgent, next);
+    if (next !== headroom) { headroom = next; await deps.store.set("headroom", next); }
+    if (u !== urgentLane) { urgentLane = u; await deps.store.set("urgentHeadroom", u); }
   }
 
   async function persistOverride(): Promise<void> {
@@ -180,9 +191,14 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     const countsOpencode = tuning.opencodeSlots > 0 && s.opencodeCountsAgainstLimit !== true;
     let opencodeCount: number | null = null;
     if (countsOpencode) { try { opencodeCount = await deps.opencodeRunning(); } catch { opencodeCount = null; } }
+    // The urgent count only matters when the lane is on. A failed read keeps the lane as it was.
+    let urgentCount: UrgentCount | null = null;
+    if (tuning.urgentSlots > 0) { try { urgentCount = await deps.urgent(); } catch { urgentCount = null; } }
+    const urgentUnreadable = tuning.urgentSlots > 0 && urgentCount === null;
     // A manual change makes the host limit a Claude-scale value: its headroom is dropped.
     const manualChange = override.lastSet !== null && cur !== override.lastSet;
     const storedHeadroom = manualChange ? 0 : headroom;
+    const storedUrgent = manualChange ? 0 : Math.min(urgentLane, storedHeadroom);
     // Claude's paced limit is the host limit without the headroom. Pacing and the quota rules see only this.
     const claudeCur = cur - storedHeadroom;
     const signals: Signals = { cur: claudeCur, min, max, loadRatio: load1 / cpus, ...usage, memory: { reading: memory, thresholds }, tuning };
@@ -204,8 +220,9 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     }
 
     // The host limit to write. Turbo writes its exact limit. Otherwise it is Claude's target plus the opencode headroom, and nothing while backing off.
-    const plan0 = opencodeHeadroom({ running: opencodeCount, slots: tuning.opencodeSlots, countsAgainstLimit: s.opencodeCountsAgainstLimit === true, previous: storedHeadroom });
-    const newHeadroom = turbo !== null ? 0 : plan0.headroom;
+    const plan0 = opencodeHeadroom({ running: opencodeCount, slots: tuning.opencodeSlots, countsAgainstLimit: s.opencodeCountsAgainstLimit === true, previous: storedHeadroom - storedUrgent });
+    const urgentWanted = turbo !== null ? 0 : urgentHeadroom({ count: urgentCount, slots: tuning.urgentSlots, previous: storedUrgent });
+    const newHeadroom = turbo !== null ? 0 : plan0.headroom + urgentWanted;
     let write: number | null = plan.write;
     if (plan.kind === "normal" && apply && g.apply) {
       const hostTarget = Math.min((plan.write ?? claudeCur) + newHeadroom, max + newHeadroom);
@@ -222,13 +239,14 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
         const claudeWritten = Math.min(plan.write ?? claudeCur, max);
         storeHeadroom = Math.max(0, Math.min(newHeadroom, landed - claudeWritten));
       }
-      await setHeadroom(storeHeadroom);
+      // When the cap clamps the headroom, the urgent slot is kept first and the opencode slots take what is left.
+      await setHeadroom(storeHeadroom, Math.min(urgentWanted, storeHeadroom));
     } else if (manualChange) {
       // No write after a manual change: the host limit is Claude-scale now, so no headroom is in effect.
       await setHeadroom(0);
     } else if (apply && plan.kind === "normal" && g.apply) {
       // The host already sits at Claude's target plus the new headroom, so only the split changes (for example when opencode finishes).
-      await setHeadroom(newHeadroom);
+      await setHeadroom(newHeadroom, urgentWanted);
     }
     // The headroom in effect now (a Turbo end in this tick has already cleared it), and Claude's limit from the host limit.
     const headroomNow = headroom;
@@ -244,16 +262,29 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
       if (g.apply) override = { ...override, lastSet: applied ? baselineAfterWrite(write ?? cur, landed) : cur };
     }
 
-    // The reason says Claude and opencode only when opencode is in play, so decisions with no opencode run read as before.
+    // How long urgent work has waited. Status ticks read it but change nothing.
+    const wait = urgentWait(tuning.urgentSlots > 0 ? urgentCount : { running: 0, waiting: 0 }, now, waitSince, tuning.urgentReportMinutes * 60_000);
+    if (apply && wait.since !== waitSince) {
+      waitSince = wait.since;
+      if (wait.since === null) await deps.store.delete("urgentWaitSince");
+      else await deps.store.set("urgentWaitSince", wait.since);
+    }
+    // The reason says Claude, opencode and urgent only when a lane is in play, so decisions with no lane read as before.
     const warn = plan0.warn;
-    const opencodeNote = headroomNow > 0 || warn !== null ? ` · Claude ${claudeNow} + opencode ${headroomNow}${warn !== null ? ` (${warn})` : ""}` : "";
-    const why = `${plan.why}${opencodeNote}`;
+    const urgentShown = Math.min(urgentLane, headroomNow);
+    const opencodeShown = headroomNow - urgentShown;
+    const laneNote = headroomNow > 0 || warn !== null
+      ? ` · Claude ${claudeNow}${opencodeShown > 0 || warn !== null ? ` + opencode ${opencodeShown}` : ""}${urgentShown > 0 ? ` + urgent ${urgentShown}` : ""}${warn !== null ? ` (${warn})` : ""}`
+      : "";
+    const waitNote = wait.starved && wait.since !== null ? ` · urgent work has waited ${Math.floor((now - wait.since) / 3600_000)} h ${Math.floor(((now - wait.since) % 3600_000) / 60_000)} min` : "";
+    const unreadableNote = urgentUnreadable ? " · urgent: unreadable" : "";
+    const why = `${plan.why}${laneNote}${waitNote}${unreadableNote}`;
     const next = plan.kind === "turbo" ? plan.next : plan.next + headroomNow;
-    last = { applied, host: host.name, cur, next, why, signals, opencodeRunning: opencodeCount, headroom: headroomNow };
+    last = { applied, host: host.name, cur, next, why, signals, opencodeRunning: opencodeCount, headroom: headroomNow, urgent: tuning.urgentSlots > 0 ? urgentCount : null, urgentHeadroom: urgentShown, urgentSince: wait.since, urgentStarved: wait.starved, urgentUnreadable };
     if (apply) {
       await persistOverride();
       try {
-        deps.appendLog({ t: new Date(now).toISOString(), host: host.name, cur, next, applied, why, load: signals.loadRatio, fiveHourUsed: signals.fiveHourUsed, fiveHourElapsed: signals.fiveHourElapsed, weekUsed: signals.weekUsed, weekElapsed: signals.weekElapsed, memory: { swapUsedPct: memory.swapUsedPct, freePct: memory.freePct, pageoutsPerSec: memory.pageoutsPerSec }, override, turbo: plan.kind === "turbo", opencodeRunning: opencodeCount, headroom: headroomNow });
+        deps.appendLog({ t: new Date(now).toISOString(), host: host.name, cur, next, applied, why, load: signals.loadRatio, fiveHourUsed: signals.fiveHourUsed, fiveHourElapsed: signals.fiveHourElapsed, weekUsed: signals.weekUsed, weekElapsed: signals.weekElapsed, memory: { swapUsedPct: memory.swapUsedPct, freePct: memory.freePct, pageoutsPerSec: memory.pageoutsPerSec }, override, turbo: plan.kind === "turbo", opencodeRunning: opencodeCount, headroom: headroomNow, ...(tuning.urgentSlots > 0 ? { urgentRunning: urgentCount?.running ?? null, urgentWaiting: urgentCount?.waiting ?? null, urgentHeadroom: urgentShown, ...(urgentUnreadable ? { urgentUnreadable: true } : {}) } : {}) });
       } catch (e) { deps.warn(`decision log not written: ${String(e)}`); }
     }
     return last;
@@ -263,7 +294,7 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     tick,
     startTurboFrom,
     endTurbo,
-    state: () => ({ override, turbo, headroom }),
+    state: () => ({ override, turbo, headroom, urgentHeadroom: Math.min(urgentLane, headroom), urgentSince: waitSince }),
     last: () => last,
     setLastError: (error: string) => { last = { ...(last as Tick), error }; },
   };
