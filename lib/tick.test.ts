@@ -8,7 +8,7 @@ const T0 = Date.parse("2026-10-24T13:00:00Z");
 const HOST = "host_1";
 
 function turbo(over: Partial<Turbo> = {}): Turbo {
-  return { startedAt: T0, until: T0 + 3600_000, limit: 6, by: "cli", hostId: HOST, globalBefore: 4, globalRaised: true, ...over };
+  return { startedAt: T0, until: T0 + 3600_000, untilOff: false, limit: 6, by: "cli", hostId: HOST, globalBefore: 4, globalRaised: true, ...over };
 }
 const open: Gate = { apply: true, state: { lastSet: 4, pausedUntil: 0 }, why: null };
 const held: Gate = { apply: false, state: { lastSet: 4, pausedUntil: T0 + 60_000 }, why: "manual limit change: backing off, 1 min left" };

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboSentence, turboStep, turboSuggested, TURBO_DEFAULT_MS, type Turbo } from "./turbo.ts";
+import { parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboMemoryEndReason, turboSentence, turboStartBlock, TURBO_UNTIL_OFF_MS, turboStep, turboSuggested, TURBO_DEFAULT_MS, type Turbo } from "./turbo.ts";
 
 const MIN = 60_000;
 const H = 3600_000;
@@ -8,12 +8,12 @@ const T0 = Date.parse("2026-10-24T19:00:00Z");
 const HOST = "host_1";
 
 function turbo(over: Partial<Turbo> = {}): Turbo {
-  return { startedAt: T0, until: T0 + H, limit: 6, by: "cli", hostId: HOST, globalBefore: null, globalRaised: false, ...over };
+  return { startedAt: T0, until: T0 + H, untilOff: false, limit: 6, by: "cli", hostId: HOST, globalBefore: null, globalRaised: false, ...over };
 }
 
 test("start: until is now plus the time box; the limit, starter, host and cap state are kept", () => {
   const t = startTurbo(T0, 6, TURBO_DEFAULT_MS, "cli", HOST, 4, true);
-  assert.deepEqual(t, { startedAt: T0, until: T0 + 2 * H, limit: 6, by: "cli", hostId: HOST, globalBefore: 4, globalRaised: true });
+  assert.deepEqual(t, { startedAt: T0, until: T0 + 2 * H, untilOff: false, limit: 6, by: "cli", hostId: HOST, globalBefore: 4, globalRaised: true });
 });
 
 test("start rejects a limit outside 1..16, a non-whole limit, and a bad duration", () => {
@@ -123,4 +123,75 @@ test("suggestion: weekly use more than 10 points behind the week's elapsed time,
 
 test("sentence names the limit, the end time and who started it", () => {
   assert.match(turboSentence(turbo({ by: "panel" })), /^Turbo on: limit 6 until .+, started by panel\.$/);
+});
+
+test("start with a null duration runs until turned off, stored with a far-future numeric time box", () => {
+  const t = startTurbo(T0, 6, null, "panel", HOST, null, false);
+  assert.equal(t.untilOff, true);
+  assert.equal(t.until, T0 + TURBO_UNTIL_OFF_MS);
+  assert.equal(typeof t.until, "number", "an older build that only knows time boxes can still read the record");
+  assert.deepEqual(parseTurbo(JSON.parse(JSON.stringify(t))), t, "survives storage");
+});
+
+test("a stored record without the untilOff flag is a time-boxed Turbo; a bad flag or time box is no Turbo", () => {
+  const { untilOff: _drop, ...old } = turbo();
+  assert.deepEqual(parseTurbo(old), turbo());
+  assert.equal(parseTurbo({ ...turbo(), untilOff: "yes" }), null);
+  assert.equal(parseTurbo({ ...turbo(), until: undefined }), null);
+  assert.equal(parseTurbo({ ...turbo(), until: "soon" }), null);
+});
+
+test("a record from the first until-off build (null time box) reads as until off", () => {
+  const { untilOff: _drop, ...old } = turbo();
+  const t = parseTurbo({ ...old, until: null });
+  assert.equal(t?.untilOff, true);
+  assert.equal(t?.until, T0 + TURBO_UNTIL_OFF_MS);
+});
+
+test("until off never ends by the clock, but the other end rules still apply", () => {
+  const t = turbo({ until: T0 + TURBO_UNTIL_OFF_MS, untilOff: true });
+  assert.equal(turboEndReason(t, T0 + 100 * H, null, false, false), null, "a time box would have ended long ago");
+  assert.equal(turboEndReason(t, T0 + 100 * H, null, true, false), "quota near limit");
+  assert.equal(turboEndReason(t, T0 + 100 * H, null, false, true), "manual limit change");
+  assert.equal(turboEndReason(t, T0 + H, T0 + H, false, false), "weekly quota reset");
+});
+
+const HOT_MEMORY = { swapUsedPct: 80, freePct: 10, pageoutsPerSec: 0 };
+const CALM_HIGH_SWAP = { swapUsedPct: 95, freePct: 79, pageoutsPerSec: 0 };
+const TH = { swapHotPercent: 70, memFreeMinPercent: 15, pageoutHotPerSec: 100 };
+
+test("memory pressure ends Turbo: free memory low, or swap high while paging out", () => {
+  assert.match(turboMemoryEndReason(HOT_MEMORY, TH, 0) ?? "", /^memory pressure \(free memory 10%/);
+  assert.match(turboMemoryEndReason({ swapUsedPct: 90, freePct: 60, pageoutsPerSec: 200 }, TH, 0) ?? "", /^memory pressure/);
+});
+
+test("swap alone is not pressure: a calm host at 95% swap with 79% free does not end Turbo", () => {
+  assert.equal(turboMemoryEndReason(CALM_HIGH_SWAP, TH, 0), null);
+  assert.equal(turboMemoryEndReason({ swapUsedPct: 95, freePct: 79, pageoutsPerSec: 5 }, TH, 0), null);
+});
+
+test("the optional raw swap line ends Turbo at or above it; 0 leaves it off; unreadable figures do not end it", () => {
+  assert.match(turboMemoryEndReason(CALM_HIGH_SWAP, TH, 95) ?? "", /^swap at 95%, the Turbo swap end line \(95%\)$/);
+  assert.equal(turboMemoryEndReason({ ...CALM_HIGH_SWAP, swapUsedPct: 94 }, TH, 95), null);
+  assert.equal(turboMemoryEndReason({ swapUsedPct: null, freePct: null, pageoutsPerSec: null }, TH, 95), null);
+});
+
+test("a memory reason ends Turbo after the quota cap and before a manual change", () => {
+  const why = "memory pressure (free memory 10%)";
+  assert.equal(turboEndReason(turbo(), T0 + MIN, null, false, false, why), why);
+  assert.equal(turboEndReason(turbo(), T0 + MIN, null, true, false, why), "quota near limit");
+  assert.equal(turboEndReason(turbo(), T0 + MIN, null, false, true, why), why);
+  assert.equal(turboEndReason(turbo(), T0 + MIN, null, false, false, null), null);
+});
+
+test("a start is blocked when an end condition already holds, with that reason", () => {
+  assert.equal(turboStartBlock(T0, null, false, null), null);
+  assert.equal(turboStartBlock(T0, null, true, null), "quota near limit");
+  assert.equal(turboStartBlock(T0, null, false, "memory pressure (free memory 10%)"), "memory pressure (free memory 10%)");
+  assert.equal(turboStartBlock(T0, T0 - 1, false, null), "weekly quota reset");
+  assert.equal(turboStartBlock(T0, T0 + H, false, null), null, "a reset still ahead does not block");
+});
+
+test("the sentence says so when there is no time box", () => {
+  assert.equal(turboSentence(turbo({ until: T0 + TURBO_UNTIL_OFF_MS, untilOff: true })), "Turbo on: limit 6 until you turn it off, started by cli.");
 });

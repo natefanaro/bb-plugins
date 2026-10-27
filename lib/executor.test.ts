@@ -173,7 +173,7 @@ test("end-then-write: the tick that ends Turbo restores the cap and writes nothi
   assert.equal(w.globalLimit, 6, "the cap is raised for Turbo");
 
   // The time box runs out. The tick that ends Turbo must not write over the restore.
-  w.now = e.state().turbo!.until + MIN;
+  w.now = e.state().turbo!.until! + MIN;
   const writesBefore = w.writes.length;
   const ended = await e.tick(true);
   assert.equal(ended.applied, false);
@@ -384,4 +384,116 @@ test("opencode: an overall cap that clamps the write stores only the headroom th
   idleTick(w);
   await e.tick(true);
   assert.equal(e.state().headroom, 0);
+});
+
+// --- Turbo durations, memory pressure and the start check.
+const HOT_MEM = { swapUsedPct: 80, freePct: 10, pageoutsPerSec: 0 };
+const CALM_HIGH_SWAP = { swapUsedPct: 95, freePct: 79, pageoutsPerSec: 0 };
+const weekUsage = (usedPercent: number) => ({ machines: [{ providers: [{ providerId: "claude-code", usage: { windows: [{ label: "Weekly limit", usedPercent, resetsAt: new Date(Date.parse("2026-10-20T00:00:00Z") + 5 * 24 * 3600_000).toISOString() }] } }] }] });
+
+test("turbo: the default time box is unchanged (2 h) when no duration is given", async () => {
+  const w = world({ limit: 4, globalLimit: 8 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  await e.startTurboFrom("panel", 6, undefined);
+  assert.equal(e.state().turbo!.until, w.now + 2 * 60 * MIN);
+  assert.equal(e.state().turbo!.untilOff, false);
+});
+test("turbo until off: stored with a numeric far-future time box, and held past 24 h", async () => {
+  const w = world({ limit: 4, globalLimit: 8 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  await e.startTurboFrom("panel", 6, null);
+  const t = e.state().turbo!;
+  assert.equal(t.untilOff, true);
+  assert.equal(typeof t.until, "number");
+  assert.equal(typeof (w.store.get("turbo") as { until: unknown }).until, "number", "a rollback can still read the stored record");
+  w.now += 24 * 60 * MIN;
+  const tick = await e.tick(true);
+  assert.notEqual(e.state().turbo, null, "still on after 24 h");
+  assert.equal(tick.applied, false);
+  assert.ok(w.logs.some((l) => "kind" in l && l.kind === "turbo" && l.action === "start" && l.until === undefined));
+});
+test("turbo: memory pressure (free memory under 15%) ends it in that tick, with no write over the restore", async () => {
+  const w = world({ limit: 4, globalLimit: 4 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  await e.startTurboFrom("panel", 6, null);
+  const writesBefore = w.writes.length;
+  w.memory = HOT_MEM;
+  w.now += 5 * MIN;
+  const t = await e.tick(true);
+  assert.equal(e.state().turbo, null, "Turbo ended");
+  assert.equal(w.writes.length, writesBefore, "no write in the tick that ends Turbo");
+  assert.equal(w.globalLimit, 4, "the cap is restored");
+  assert.ok(w.logs.some((l) => "kind" in l && l.kind === "turbo" && l.action === "end" && /memory pressure \(free memory 10%/.test(l.reason ?? "")));
+  assert.equal(t.applied, false);
+});
+test("turbo: a calm host sitting at 95% swap with 79% free does not end it (swap alone is not pressure)", async () => {
+  const w = world({ limit: 4, globalLimit: 8 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  await e.startTurboFrom("panel", 6, null);
+  w.memory = CALM_HIGH_SWAP;
+  w.now += 5 * MIN;
+  await e.tick(true);
+  assert.notEqual(e.state().turbo, null);
+});
+test("turbo: the optional raw swap line (turboSwapEndPercent 95) ends it on a calm host", async () => {
+  const w = world({ limit: 4, globalLimit: 8, settings: { ...world().settings, turboSwapEndPercent: 95 } });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  await e.startTurboFrom("panel", 6, null);
+  w.memory = CALM_HIGH_SWAP;
+  w.now += 5 * MIN;
+  await e.tick(true);
+  assert.equal(e.state().turbo, null);
+  assert.ok(w.logs.some((l) => "kind" in l && l.kind === "turbo" && l.action === "end" && /Turbo swap end line/.test(l.reason ?? "")));
+});
+test("turbo: a bad turboSwapEndPercent falls back to off", async () => {
+  const w = world({ limit: 4, globalLimit: 8, settings: { ...world().settings, turboSwapEndPercent: 10 } });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  await e.startTurboFrom("panel", 6, null);
+  w.memory = CALM_HIGH_SWAP;
+  w.now += 5 * MIN;
+  await e.tick(true);
+  assert.notEqual(e.state().turbo, null);
+});
+test("turbo start is refused under memory pressure: nothing is written or stored", async () => {
+  const w = world({ limit: 4, globalLimit: 8, memory: HOT_MEM });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  const writesBefore = w.writes.length;
+  await assert.rejects(e.startTurboFrom("panel", 6, 30 * MIN), /^Error: Turbo not started: memory pressure \(free memory 10%/);
+  assert.equal(w.writes.length, writesBefore);
+  assert.equal(e.state().turbo, null);
+  assert.equal(w.store.has("turbo"), false);
+  assert.equal(w.globalLimit, 8, "the cap is not raised");
+});
+test("turbo start is refused when the quota is near its cap", async () => {
+  const w = world({ limit: 4, globalLimit: 8 });
+  const d = deps(w);
+  d.usage = async () => weekUsage(95);
+  const e = await createExecutor(d);
+  await e.tick(true);
+  await assert.rejects(e.startTurboFrom("cli", 6, undefined), /^Error: Turbo not started: quota near limit/);
+  assert.equal(e.state().turbo, null);
+});
+test("turbo start is not blocked by unreadable quota or memory", async () => {
+  const w = world({ limit: 4, globalLimit: 8 });
+  const d = deps(w);
+  d.usage = async () => { throw new Error("usage down"); };
+  d.memory = async () => { throw new Error("memory down"); };
+  const e = await createExecutor(d);
+  await e.tick(true);
+  await e.startTurboFrom("cli", 6, undefined);
+  assert.notEqual(e.state().turbo, null);
+});
+test("turbo start is not blocked by high swap alone", async () => {
+  const w = world({ limit: 4, globalLimit: 8, memory: CALM_HIGH_SWAP });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  await e.startTurboFrom("panel", 6, 30 * MIN);
+  assert.notEqual(e.state().turbo, null);
 });

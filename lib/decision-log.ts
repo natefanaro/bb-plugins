@@ -77,7 +77,7 @@ export function readDecisions(file: string, last: number): LogLine[] {
 export function formatDecision(line: LogLine): string {
   if (!isTick(line)) {
     if (line.action === "start") {
-      return `${line.t}  turbo started by ${line.by}: limit ${line.limit ?? "?"} until ${line.until ?? "?"}`;
+      return `${line.t}  turbo started by ${line.by}: limit ${line.limit ?? "?"} until ${line.until ?? "it is turned off"}`;
     }
     return `${line.t}  turbo ended by ${line.by}${line.reason ? `: ${line.reason}` : ""}`;
   }

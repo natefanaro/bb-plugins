@@ -58,6 +58,9 @@ Set these with `bb plugin config concurrency-coach`.
 | `overrideBackoffMinutes` | `120` | After a manual limit change, stop writing for this many minutes. `0` resumes on the next tick. |
 | `swapHotPercent` | `70` | Swap used (percent of the swap total) at or above which memory counts as pressure. |
 | `memFreeMinPercent` | `15` | System-wide free memory (percent) below which memory counts as pressure. |
+| `turboChoices` | `30,60,120` | The Turbo duration buttons, in minutes, comma separated. Up to six, each 1 to 720. A bad entry is dropped; if none is left the default applies. |
+| `turboAllowUntilOff` | `true` | Offer Turbo "until off" (no time box). |
+| `turboSwapEndPercent` | `0` | Optional extra: swap used (percent) at or above which Turbo ends, on top of memory pressure. `0` leaves it off; otherwise 50 to 100 (a bad value falls back to off). Swap alone is not pressure, so leave it off unless you want it. |
 
 ## Manual changes
 
@@ -72,23 +75,25 @@ After a write, the baseline is the limit the host reports back, not the one Coac
 - `bb concurrency-coach status [--json]`: show what Concurrency Coach would do now. Changes nothing.
 - `bb concurrency-coach tick`: run one adjustment now and apply it.
 - `bb concurrency-coach log [--last N]`: show the most recent logged decisions and Turbo events (default 20), oldest first.
-- `bb concurrency-coach turbo [--limit N] [--for 2h]`: turn Turbo on. The limit is written now. Defaults: `maxLimit` for 2 h.
+- `bb concurrency-coach turbo [--limit N] [--for 2h | --until-off]`: turn Turbo on. The limit is written now. Defaults: `maxLimit` for 2 h. `--until-off` has no time box. It is refused, with the reason, when the quota is already near its cap or memory is already under pressure.
 - `bb concurrency-coach turbo off`: turn Turbo off.
 
 ## Turbo
 
-Turbo holds a chosen limit for a time box, for example to use quota that would otherwise expire unused at the weekly reset.
+Turbo holds a chosen limit for a time box (30 min, 1 h or 2 h by default, or until you turn it off), for example to use quota that would otherwise expire unused at the weekly reset.
 
 - `bb concurrency-coach turbo [--limit N] [--for 2h]` turns it on. The limit is written at once. Defaults: `maxLimit` for 2 h. `bb concurrency-coach turbo off` turns it off.
 - While Turbo is on, the limit is held at its value. The CPU-hot rule does not apply, and Turbo's own writes do not start the manual back-off.
 - **A manual limit change ends Turbo.** Turbo does not write over it. The change then backs off as usual (see Manual changes).
-- Turbo also ends at the weekly quota reset, when the quota nears its cap (week at 90% or five-hour at 92%, and the limit drops to `minLimit`), or when the time box runs out. The end is checked on each scheduled tick, so it can be up to five minutes late.
+- Turbo also ends at the weekly quota reset, when the quota nears its cap (week at 90% or five-hour at 92%, and the limit drops to `minLimit`), under memory pressure (free memory under `memFreeMinPercent`, or swap at `swapHotPercent` or more while paging out; the same rule the scheduler uses, which Turbo would otherwise skip), or when the time box runs out. An unreadable figure does not end it. "Until off" has no time box, so only the other reasons, a manual change, or `turbo off` end it. The end is checked on each scheduled tick, so it can be up to five minutes late.
 - **Overall cap:** if the Turbo limit is above the overall cap, Turbo raises the cap. The cap goes back to its value from before Turbo when Turbo ends. The host's limit cannot stay above the restored cap, so it may be lowered at the same time.
 - **Core count:** a limit above `maxLimit` or above the number of cores runs more threads than usual. The CLI warns when the limit is above the core count. The most a Turbo limit can be is 16.
+- **Rollback:** an until-off Turbo is stored with a far-future numeric time box, so an older build still reads it (it then runs as a very long time box, and still restores the overall cap when it ends). If you revert, you can run `turbo off` first anyway.
 - Turbo is stored in plugin storage, so it survives a reload or restart. After a restart, the first tick records the current limit as the baseline and does not write, as with the back-off.
 - Turbo off leaves the limit where it is. The next scheduled tick then decides as usual.
 - Starting or ending Turbo is written to the decision log with who did it (`cli`, `panel` or `scheduler`) and when.
-- The panel shows a Turbo button and a countdown. It suggests Turbo when weekly use is more than 10 points behind the week's elapsed time with three hours or less to the reset.
+- The buttons are disabled, with the reason, while a start would end at once (quota near its cap, or memory pressure).
+- The panel shows one button per duration (from `turboChoices`, plus "Until off" unless `turboAllowUntilOff` is false), and a countdown, or "until you turn it off". It suggests Turbo when weekly use is more than 10 points behind the week's elapsed time with three hours or less to the reset.
 
 ## opencode threads
 

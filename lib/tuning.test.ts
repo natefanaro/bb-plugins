@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { DEFAULT_TUNING, tuningFrom } from "./tuning.ts";
 
 test("the defaults are the values the plugin shipped with", () => {
-  assert.deepEqual(DEFAULT_TUNING, { hotLoad: 0.85, idleLoad: 0.5, quotaFiveHourNear: 92, quotaWeekNear: 90, slackFiveHour: 25, slackWeek: 6, raiseSlackWeek: 3, pageoutHotPerSec: 100, opencodeSlots: 1 });
+  assert.deepEqual(DEFAULT_TUNING, { hotLoad: 0.85, idleLoad: 0.5, quotaFiveHourNear: 92, quotaWeekNear: 90, slackFiveHour: 25, slackWeek: 6, raiseSlackWeek: 3, pageoutHotPerSec: 100, opencodeSlots: 1, turboSwapEndPercent: 0 });
 });
 test("tuningFrom takes the settings and falls back to the default for a missing or non-numeric value", () => {
   assert.deepEqual(tuningFrom({}), DEFAULT_TUNING);
@@ -50,4 +50,15 @@ test("opencodeSlots is a whole number 0 to 10; anything else falls back to 1; 0 
   assert.equal(tuningFrom({ opencodeSlots: -1 }).opencodeSlots, 1);
   assert.equal(tuningFrom({ opencodeSlots: 11 }).opencodeSlots, 1);
   assert.equal(tuningFrom({ opencodeSlots: "2" as unknown as number }).opencodeSlots, 1);
+});
+
+test("turboSwapEndPercent is 0 (off, the default) or 50 to 100; anything else falls back to 0", () => {
+  assert.equal(tuningFrom({ turboSwapEndPercent: 0 }).turboSwapEndPercent, 0);
+  assert.equal(tuningFrom({ turboSwapEndPercent: 50 }).turboSwapEndPercent, 50);
+  assert.equal(tuningFrom({ turboSwapEndPercent: 100 }).turboSwapEndPercent, 100);
+  assert.equal(tuningFrom({ turboSwapEndPercent: 10 }).turboSwapEndPercent, 0);
+  assert.equal(tuningFrom({ turboSwapEndPercent: 101 }).turboSwapEndPercent, 0);
+  assert.equal(tuningFrom({ turboSwapEndPercent: Number.NaN }).turboSwapEndPercent, 0);
+  assert.equal(tuningFrom({ turboSwapEndPercent: "90" }).turboSwapEndPercent, 0);
+  assert.equal(tuningFrom({}).turboSwapEndPercent, 0);
 });
