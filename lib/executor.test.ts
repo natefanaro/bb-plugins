@@ -24,12 +24,15 @@ interface World {
   warns: string[];
   store: Map<string, unknown>;
   settings: CoachSettings;
+  /** Busy opencode threads the fake feed reports, or null for an unreadable feed. */
+  opencode: number | null;
 }
 
 function world(over: Partial<World> = {}): World {
   return {
     limit: 4,
     globalLimit: 8,
+    opencode: 0,
     writes: [],
     restores: 0,
     now: T0,
@@ -72,6 +75,7 @@ function deps(w: World): Deps {
       },
     },
     usage: async () => null, // quota unknown: the CPU rule and the memory rule are what is tested here
+    opencodeRunning: async () => w.opencode,
     memory: async () => w.memory,
     load: () => ({ load1: w.load1, cpus: w.cpus }),
     now: () => w.now,
@@ -238,4 +242,124 @@ test("a memory read that throws is not a signal: scaling is as before", async ()
   const e = await createExecutor({ ...d, memory: async () => { throw new Error("no vm_stat"); } });
   await e.tick(true);
   assert.deepEqual(w.writes, [5]);
+});
+
+// --- opencode headroom. The host limit is Claude's paced limit plus one slot per running opencode thread, up to opencodeSlots.
+
+const idleTick = (w: World) => { w.now += 5 * MIN; };
+test("opencode: none running, the decision is the same as before (no headroom, no opencode note)", async () => {
+  const w = world({ limit: 4, opencode: 0 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [5]);
+  assert.equal(e.state().headroom, 0);
+  assert.doesNotMatch((w.logs[0] as { why: string }).why, /opencode/);
+});
+test("opencode: one running with one slot: Claude's decision is unchanged and the host gets one slot of headroom", async () => {
+  const w = world({ limit: 4, opencode: 1 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  const t = await e.tick(true);
+  assert.deepEqual(w.writes, [6], "Claude 5 + opencode 1");
+  assert.equal(e.state().headroom, 1);
+  assert.equal(t.headroom, 1);
+  assert.match((w.logs[0] as { why: string }).why, /Claude 5 \+ opencode 1/);
+  // Next tick: Claude's paced limit is the host limit minus the headroom (5), so the decision steps Claude to 6 and the host to 7.
+  idleTick(w);
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6, 7]);
+});
+test("opencode: two running with one slot: headroom capped at one, and the warning is in the reason", async () => {
+  const w = world({ limit: 4, opencode: 2 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6]);
+  assert.equal(e.state().headroom, 1);
+  assert.match((w.logs[0] as { why: string }).why, /2 opencode runs, more than opencodeSlots 1/);
+});
+test("opencode: two running with two slots: both get headroom, no warning", async () => {
+  const w = world({ limit: 4, opencode: 2, settings: { ...world().settings, opencodeSlots: 2 } });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [7]);
+  assert.doesNotMatch((w.logs[0] as { why: string }).why, /more than opencodeSlots/);
+});
+test("opencode: feature off (opencodeSlots 0) writes as before, whatever is running", async () => {
+  const w = world({ limit: 4, opencode: 3, settings: { ...world().settings, opencodeSlots: 0 } });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [5]);
+  assert.equal(e.state().headroom, 0);
+});
+test("opencode counts against the limit: no headroom is added", async () => {
+  const w = world({ limit: 4, opencode: 1, settings: { ...world().settings, opencodeCountsAgainstLimit: true } });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [5]);
+});
+test("opencode: a bad opencodeSlots setting falls back to its default of one slot", async () => {
+  const w = world({ limit: 4, opencode: 1, settings: { ...world().settings, opencodeSlots: 99 } });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6], "99 is out of range, so one slot");
+});
+test("opencode: when the runs finish, the headroom is dropped without moving the host limit", async () => {
+  const w = world({ limit: 4, opencode: 1 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true); // host 6 = Claude 5 + 1
+  w.opencode = 0;
+  idleTick(w);
+  await e.tick(true); // Claude 5 -> 6 with no headroom: host stays 6
+  assert.deepEqual(w.writes, [6], "no write: the host already sits at the target");
+  assert.equal(e.state().headroom, 0, "the headroom is now zero");
+});
+test("opencode: an unknown count keeps the headroom in effect", async () => {
+  const w = world({ limit: 4, opencode: 1 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true); // host 6
+  w.opencode = null;
+  idleTick(w);
+  await e.tick(true);
+  assert.equal(e.state().headroom, 1, "kept");
+  assert.deepEqual(w.writes, [6, 7], "Claude 5 -> 6, plus the kept slot");
+});
+test("opencode: Turbo writes its exact limit with no headroom", async () => {
+  const w = world({ limit: 4, globalLimit: 4, opencode: 1 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.startTurboFrom("cli", 6, 2 * 60 * MIN);
+  assert.equal(e.state().headroom, 0);
+  idleTick(w);
+  await e.tick(true);
+  assert.deepEqual(w.writes, [6], "held at the Turbo limit, no slot added");
+});
+test("opencode: a manual change drops the headroom and backs off", async () => {
+  const w = world({ limit: 4, opencode: 1 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const e = await createExecutor(deps(w));
+  await e.tick(true); // host 6, headroom 1
+  w.limit = 3; // the operator sets the host limit by hand
+  idleTick(w);
+  await e.tick(true);
+  assert.equal(e.state().headroom, 0);
+  assert.deepEqual(w.writes, [6], "no write over the manual value");
+});
+test("opencode: the headroom survives a reload, and the next write keeps Claude's pacing", async () => {
+  const w = world({ limit: 4, opencode: 1 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const first = await createExecutor(deps(w));
+  await first.tick(true); // host 6, headroom 1
+  const reloaded = await createExecutor(deps(w));
+  assert.equal(reloaded.state().headroom, 1, "read back from the store");
+  idleTick(w);
+  await reloaded.tick(true);
+  assert.deepEqual(w.writes, [6, 7], "Claude 5 -> 6 plus one slot");
 });

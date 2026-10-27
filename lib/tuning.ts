@@ -17,6 +17,8 @@ export interface Tuning {
   raiseSlackWeek: number;
   /** Page-outs per second at or above which swap counts as thrashing. */
   pageoutHotPerSec: number;
+  /** How many opencode threads may run with one slot of host headroom each. 0 turns the feature off. */
+  opencodeSlots: number;
 }
 
 export const DEFAULT_TUNING: Tuning = {
@@ -28,6 +30,7 @@ export const DEFAULT_TUNING: Tuning = {
   slackWeek: 6,
   raiseSlackWeek: 3,
   pageoutHotPerSec: 100,
+  opencodeSlots: 1,
 };
 
 /** Each tunable's range. A value outside it, or not a finite number, falls back to its default. Percent thresholds are 1 to 100 (0 would pin the limit to the minimum); slacks are 0 to 100; loads are above 0; page-outs are 0 or more. */
@@ -40,6 +43,7 @@ const VALID: Record<keyof Tuning, (v: number) => boolean> = {
   slackWeek: (v) => v >= 0 && v <= 100,
   raiseSlackWeek: (v) => v >= 0 && v <= 100,
   pageoutHotPerSec: (v) => v >= 0,
+  opencodeSlots: (v) => Number.isInteger(v) && v >= 0 && v <= 10,
 };
 
 /**
@@ -60,6 +64,7 @@ export function tuningFrom(s: Partial<Record<keyof Tuning, unknown>>): Tuning {
     slackWeek: pick("slackWeek"),
     raiseSlackWeek: pick("raiseSlackWeek"),
     pageoutHotPerSec: pick("pageoutHotPerSec"),
+    opencodeSlots: pick("opencodeSlots"),
   };
   if (!(t.idleLoad < t.hotLoad)) {
     t.idleLoad = DEFAULT_TUNING.idleLoad;

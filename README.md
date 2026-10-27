@@ -90,6 +90,18 @@ Turbo holds a chosen limit for a time box, for example to use quota that would o
 - Starting or ending Turbo is written to the decision log with who did it (`cli`, `panel` or `scheduler`) and when.
 - The panel shows a Turbo button and a countdown. It suggests Turbo when weekly use is more than 10 points behind the week's elapsed time with three hours or less to the reset.
 
+## opencode threads
+
+opencode threads (providerId `acp-opencode`) are not limited by Claude quota pacing. Each running opencode thread may add one slot to the host limit, up to `opencodeSlots`.
+
+- The host limit is Claude's paced limit plus the headroom. Pacing and the quota rules see only Claude's limit, so an opencode run never lowers Claude's capacity and does not change a Claude decision.
+- `opencodeSlots` (default 1, 0 to 10): how many opencode threads get headroom. 0 turns the feature off.
+- `opencodeCountsAgainstLimit` (default false): true means opencode threads take Claude capacity, with no headroom.
+- More opencode threads than slots: the reason and the window say so. Coach cannot block spawns; keep to one at a time.
+- The reason and the window show `Claude N + opencode M`. Turbo holds its exact limit with no headroom. A manual change drops the headroom.
+- The count comes from `bb agent-tv status --all-projects --json`: `acp-opencode` rows that are busy or queued (status `pending` or `queued`). A queued run counts too, so it earns its slot before it starts. Idle rows do not count. If the feed cannot be read, the headroom in effect is kept.
+- The headroom is written on the next scheduled tick (up to 5 minutes), not the moment a run starts. A run that starts between ticks waits for that tick to get its slot.
+
 ## Decision log
 
 Every applied tick (scheduled or from `tick`) appends one JSON line to `~/.bb-studio/concurrency-pacer/decisions.jsonl` (owner-only): time, host, the limit before and after, whether it was written, the reason, load, 5-hour and weekly quota, the manual-change state, and whether Turbo was on. Turbo starts and ends are written as their own lines with who did it. `status` is not logged. The file moves to `decisions.jsonl.1` at about 1 MB, replacing the previous rotation. Set `CONCURRENCY_PACER_DIR` to move it.

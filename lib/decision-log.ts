@@ -19,6 +19,9 @@ export interface DecisionRecord {
   /** The readings the decision used, for the Coach window. Lines written before these fields have none. */
   weekElapsed?: number | null;
   memory?: { swapUsedPct: number | null; freePct: number | null; pageoutsPerSec: number | null } | null;
+  /** Busy opencode threads at this tick, and the opencode headroom on the host after it. Absent on lines written before this change. */
+  opencodeRunning?: number | null;
+  headroom?: number;
   override: { lastSet: number | null; pausedUntil: number };
   /** True when the tick was made under an active Turbo (lines written before Turbo have no field). */
   turbo?: boolean;

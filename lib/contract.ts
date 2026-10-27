@@ -26,10 +26,22 @@ export const panelSchema = z.object({
   /** Set when the limit plugin could not be read; the other fields are then best-effort. */
   error: z.string().nullable(),
   limit: z.object({
+    /** The host limit now: Claude's paced limit plus the opencode headroom. */
     current: z.number().nullable(),
     min: z.number(),
     max: z.number(),
     globalLimit: z.number().nullable(),
+    /** Claude's paced limit (the host limit without the headroom). Null when the host limit is unknown. */
+    claude: z.number().nullable(),
+    /** The opencode headroom on the host, one slot per running opencode thread up to the slots. */
+    opencode: z.object({
+      headroom: z.number(),
+      running: z.number().nullable(),
+      slots: z.number(),
+      countsAgainstLimit: z.boolean(),
+      /** Plain words when more opencode threads run than the slots; null otherwise. */
+      warning: z.string().nullable(),
+    }),
   }),
   threads: z.object({
     /** Threads occupying a slot now: starting or active, hidden included (bb.sdk.threads.listRunning). Not capped. */
