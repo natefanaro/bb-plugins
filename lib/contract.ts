@@ -18,6 +18,14 @@ export const turboViewSchema = z.object({
   startedBy: z.enum(["cli", "panel"]).nullable(),
   /** Offer Turbo: weekly use is behind pace with three hours or less to the reset. Only when Turbo is off. */
   suggested: z.boolean(),
+  /** True while an active Turbo has no time box: it runs until turned off. */
+  untilOff: z.boolean(),
+  /** The duration buttons the panel offers (the settings). Minutes null is "until off". */
+  choices: z.array(z.object({ minutes: z.number().nullable(), label: z.string() })),
+  /** The optional raw swap end line (percent); 0 means it is off. Memory pressure ends Turbo either way. */
+  memoryEndPercent: z.number(),
+  /** Set when a start now would end at once (quota near its cap, or memory pressure); the buttons are held back. */
+  blockedReason: z.string().nullable(),
 });
 
 export const panelSchema = z.object({
@@ -96,6 +104,8 @@ export const coachRpcContract = defineRpcContract({
     input: z.object({
       limit: z.number().int().min(1).max(16).nullable(),
       minutes: z.number().int().min(1).max(720).nullable(),
+      /** Run until turned off, instead of a time box. */
+      untilOff: z.boolean().optional(),
     }).strict(),
     output: turboViewSchema,
   },

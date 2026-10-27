@@ -19,6 +19,8 @@ export interface Tuning {
   pageoutHotPerSec: number;
   /** How many opencode threads may run with one slot of host headroom each. 0 turns the feature off. */
   opencodeSlots: number;
+  /** Optional extra: swap used (percent) at or above which Turbo ends, on top of the memory-pressure rule. 0 (the default) leaves it off. */
+  turboSwapEndPercent: number;
 }
 
 export const DEFAULT_TUNING: Tuning = {
@@ -31,9 +33,10 @@ export const DEFAULT_TUNING: Tuning = {
   raiseSlackWeek: 3,
   pageoutHotPerSec: 100,
   opencodeSlots: 1,
+  turboSwapEndPercent: 0,
 };
 
-/** Each tunable's range. A value outside it, or not a finite number, falls back to its default. Percent thresholds are 1 to 100 (0 would pin the limit to the minimum); slacks are 0 to 100; loads are above 0; page-outs are 0 or more. */
+/** Each tunable's range. A value outside it, or not a finite number, falls back to its default. Percent thresholds are 1 to 100 (0 would pin the limit to the minimum), except the Turbo swap end line, which is 0 (off) or 50 to 100; slacks are 0 to 100; loads are above 0; page-outs are 0 or more. */
 const VALID: Record<keyof Tuning, (v: number) => boolean> = {
   hotLoad: (v) => v > 0,
   idleLoad: (v) => v > 0,
@@ -44,6 +47,7 @@ const VALID: Record<keyof Tuning, (v: number) => boolean> = {
   raiseSlackWeek: (v) => v >= 0 && v <= 100,
   pageoutHotPerSec: (v) => v >= 0,
   opencodeSlots: (v) => Number.isInteger(v) && v >= 0 && v <= 10,
+  turboSwapEndPercent: (v) => v === 0 || (v >= 50 && v <= 100),
 };
 
 /**
@@ -65,6 +69,7 @@ export function tuningFrom(s: Partial<Record<keyof Tuning, unknown>>): Tuning {
     raiseSlackWeek: pick("raiseSlackWeek"),
     pageoutHotPerSec: pick("pageoutHotPerSec"),
     opencodeSlots: pick("opencodeSlots"),
+    turboSwapEndPercent: pick("turboSwapEndPercent"),
   };
   if (!(t.idleLoad < t.hotLoad)) {
     t.idleLoad = DEFAULT_TUNING.idleLoad;

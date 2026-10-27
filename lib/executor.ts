@@ -9,7 +9,7 @@ import { NO_MEMORY, type MemoryReading } from "./memory.ts";
 import { tuningFrom, type Tuning } from "./tuning.ts";
 import { opencodeHeadroom, parseHeadroom } from "./headroom.ts";
 import {
-  parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboSentence, turboStep, TURBO_DEFAULT_MS, type Turbo,
+  parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboMemoryEndReason, turboSentence, turboStartBlock, turboStep, TURBO_DEFAULT_MS, type Turbo,
 } from "./turbo.ts";
 
 export interface CoachSettings extends Partial<Tuning> {
@@ -48,7 +48,7 @@ export interface Tick { applied: boolean; host: string; cur: number; next: numbe
 
 export interface Executor {
   tick(apply: boolean): Promise<Tick>;
-  startTurboFrom(by: "cli" | "panel", limit: number | undefined, durationMs: number | undefined): Promise<{ turbo: Turbo; capRaised: boolean }>;
+  startTurboFrom(by: "cli" | "panel", limit: number | undefined, durationMs: number | null | undefined): Promise<{ turbo: Turbo; capRaised: boolean }>;
   endTurbo(by: "cli" | "panel" | "scheduler", reason: string): Promise<boolean>;
   /** The stored back-off and Turbo as the executor holds them. */
   state(): { override: OverrideState; turbo: Turbo | null; headroom: number };
@@ -128,20 +128,33 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     return true;
   }
 
-  /** Start Turbo. The start writes the limit now; it is an explicit instruction, not a scheduled tick. Starting over an active Turbo keeps that Turbo's cap state. */
-  async function startTurboFrom(by: "cli" | "panel", limit: number | undefined, durationMs: number | undefined): Promise<{ turbo: Turbo; capRaised: boolean }> {
+  /** Start Turbo. The start writes the limit now; it is an explicit instruction, not a scheduled tick. Starting over an active Turbo keeps that Turbo's cap state. A null duration runs until Turbo is turned off; undefined is the default time box. */
+  async function startTurboFrom(by: "cli" | "panel", limit: number | undefined, durationMs: number | null | undefined): Promise<{ turbo: Turbo; capRaised: boolean }> {
     const s = await deps.settings();
     const cfg = await deps.limits.get();
     const host = pickHost(cfg, s.host);
     const max = Math.max(Math.max(1, Math.floor(s.minLimit)), Math.floor(s.maxLimit));
     const want = limit ?? max;
+    // Refuse a start that would end on the next tick: the same quota and memory rules the tick applies. An unreadable figure is not a signal.
+    const tuning = tuningFrom(s);
+    let usage: ReturnType<typeof parseUsage> = { fiveHourUsed: null, fiveHourElapsed: null, weekUsed: null, weekElapsed: null, weekResetsAt: null };
+    try { usage = parseUsage(await deps.usage(), deps.now()); } catch { /* quota unknown */ }
+    let reading: MemoryReading = NO_MEMORY;
+    try { reading = await deps.memory(); } catch { /* memory unknown */ }
+    const block = turboStartBlock(
+      deps.now(),
+      usage.weekResetsAt,
+      quotaNear(usage, tuning),
+      turboMemoryEndReason(reading, { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec }, tuning.turboSwapEndPercent),
+    );
+    if (block !== null) throw new Error(`Turbo not started: ${block}`);
     const prior = turbo;
     const globalBefore = prior !== null ? prior.globalBefore : cfg.globalLimit;
     const capRaised = (prior !== null && prior.globalRaised) || raisesCap(cfg.globalLimit, want);
-    const t = startTurbo(deps.now(), want, durationMs ?? TURBO_DEFAULT_MS, by, host.id, globalBefore, capRaised);
+    const t = startTurbo(deps.now(), want, durationMs === undefined ? TURBO_DEFAULT_MS : durationMs, by, host.id, globalBefore, capRaised);
     const cur = host.effectiveLimit ?? max;
     await saveTurbo(t);
-    logTurbo({ by, action: "start", limit: t.limit, until: new Date(t.until).toISOString() });
+    logTurbo({ by, action: "start", limit: t.limit, ...(t.untilOff ? {} : { until: new Date(t.until).toISOString() }) });
     const landed = t.limit !== cur ? await writeLimit(cfg, host.id, t.limit) : cur;
     override = { ...override, lastSet: baselineAfterWrite(t.limit, landed) };
     await persistOverride();
@@ -173,9 +186,9 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     // Claude's paced limit is the host limit without the headroom. Pacing and the quota rules see only this.
     const claudeCur = cur - storedHeadroom;
     const signals: Signals = { cur: claudeCur, min, max, loadRatio: load1 / cpus, ...usage, memory: { reading: memory, thresholds }, tuning };
-    // Turbo ends at the quota cap, on a manual change, at the weekly reset, or when its time box runs out.
+    // Turbo ends at the quota cap, under memory pressure, on a manual change, at the weekly reset, or when its time box runs out.
     const turboManual = turbo !== null && turboStep(override.lastSet, cur, turbo.limit).kind === "manual";
-    const endReason = turbo === null ? null : turboEndReason(turbo, now, usage.weekResetsAt, quotaNear(signals, tuning), turboManual);
+    const endReason = turbo === null ? null : turboEndReason(turbo, now, usage.weekResetsAt, quotaNear(signals, tuning), turboManual, turboMemoryEndReason(memory, thresholds, tuning.turboSwapEndPercent));
     const g = gate(override, cur, now, Math.max(0, s.overrideBackoffMinutes) * 60_000);
     // Turbo plans on the exact host limit; everything else plans on Claude's paced limit.
     const plan = planTick({ apply, cur: turbo !== null ? cur : claudeCur, turbo, endReason, lastSet: override.lastSet, decision: decide({ ...signals, cur: turbo !== null ? cur : claudeCur }), gate: g });

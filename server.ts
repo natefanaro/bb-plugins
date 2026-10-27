@@ -12,10 +12,12 @@ import { appendDecision, formatDecision, logFile, readDecisions, type TurboEvent
 import { history, lastDecision, loadLevel, paceState, reasonSentence, topCpuName, weekPaceState } from "./lib/panel.ts";
 import { createExecutor, type Tick } from "./lib/executor.ts";
 import {
-  parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboSentence, turboStep, turboSuggested,
+  parseTurbo, quotaNear, raisesCap, startTurbo, turboCapRestore, turboEndReason, turboMemoryEndReason, turboSentence, turboStartBlock, turboStep, turboSuggested,
   TURBO_DEFAULT_MS, TURBO_MAX_LIMIT, TURBO_MAX_MS, type Turbo,
 } from "./lib/turbo.ts";
 import { coachRpcContract, type PanelView, type TurboView } from "./lib/contract.ts";
+import { parseTurboChoices, type TurboChoice } from "./lib/turbo-choices.ts";
+import { turboCli } from "./lib/turbo-cli.ts";
 
 const execFileP = promisify(execFile);
 
@@ -42,6 +44,10 @@ export default async function plugin(bb: BbPluginApi) {
     pageoutHotPerSec: { type: "number", label: "Page-outs per second that count as thrashing (with swap)", default: 100 },
     opencodeSlots: { type: "number", label: "opencode threads that get one slot of headroom each (0 turns it off)", default: 1 },
     opencodeCountsAgainstLimit: { type: "boolean", label: "opencode threads take Claude capacity (no headroom)", default: false },
+    // Turbo: the duration buttons, and the swap line that ends it.
+    turboChoices: { type: "string", label: "Turbo duration buttons, in minutes, comma separated (up to 6, each 1 to 720)", default: "30,60,120" },
+    turboAllowUntilOff: { type: "boolean", label: "Offer Turbo \"until off\" (no time box)", default: true },
+    turboSwapEndPercent: { type: "number", label: "Extra: swap used (percent) at which Turbo ends, on top of memory pressure (0 = off; otherwise 50 to 100)", default: 0 },
   });
 
   // The executor holds the back-off and Turbo (kept in plugin storage) and carries out each tick. See lib/executor.ts.
@@ -63,15 +69,25 @@ export default async function plugin(bb: BbPluginApi) {
     `load/cpu ${t.signals.loadRatio.toFixed(2)}  free memory ${t.signals.memory?.reading.freePct ?? "?"}%  swap ${t.signals.memory?.reading.swapUsedPct ?? "?"}%  paging out ${t.signals.memory?.reading.pageoutsPerSec ?? "?"}/s  5h ${t.signals.fiveHourUsed ?? "?"}% (${t.signals.fiveHourElapsed ?? "?"}% elapsed)  week ${t.signals.weekUsed ?? "?"}%`;
 
   /** Turbo as the panel and RPC see it. Ends it on the same rules as the scheduler, without writing. */
-  function turboView(turbo: Turbo | null, now: number, weekResetsAt: number | null, near: boolean, manual: boolean): TurboView {
-    const active = turbo !== null && turboEndReason(turbo, now, weekResetsAt, near, manual) === null ? turbo : null;
+  function turboView(turbo: Turbo | null, now: number, weekResetsAt: number | null, near: boolean, manual: boolean, memoryReason: string | null, choices: TurboChoice[], memoryEndPercent: number): TurboView {
+    const active = turbo !== null && turboEndReason(turbo, now, weekResetsAt, near, manual, memoryReason) === null ? turbo : null;
     return {
       active: active !== null,
       limit: active?.limit ?? null,
-      until: active ? new Date(active.until).toISOString() : null,
+      until: active !== null && !active.untilOff ? new Date(active.until).toISOString() : null,
       startedBy: active?.by ?? null,
       suggested: false,
+      untilOff: active !== null && active.untilOff,
+      choices,
+      memoryEndPercent,
+      // A start now would end at once, so the buttons are held back with this reason.
+      blockedReason: active === null ? turboStartBlock(now, weekResetsAt, near, memoryReason) : null,
     };
+  }
+  /** The Turbo duration buttons from the settings. */
+  async function turboChoices(): Promise<TurboChoice[]> {
+    const s = await settings.get();
+    return parseTurboChoices(s.turboChoices, s.turboAllowUntilOff);
   }
 
   bb.background.schedule("adjust", "*/5 * * * *", async () => {
@@ -116,7 +132,10 @@ export default async function plugin(bb: BbPluginApi) {
     const near = quotaNear({ weekUsed: usage.weekUsed, fiveHourUsed: usage.fiveHourUsed }, tuning);
     const { override, turbo } = exec.state();
     const manual = turbo !== null && current !== null && turboStep(override.lastSet, current, turbo.limit).kind === "manual";
-    const turboNow = turboView(turbo, now, usage.weekResetsAt, near, manual);
+    // Fast read for the panel: swap and free memory now, and the paging rate from the last tick (null until a tick has run since the plugin loaded).
+    const fresh = await readMemory({ paging: false });
+    const memory = { ...fresh, pageoutsPerSec: exec.last()?.signals.memory?.reading.pageoutsPerSec ?? null };
+    const turboNow = turboView(turbo, now, usage.weekResetsAt, near, manual, turboMemoryEndReason(memory, { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec }, tuning.turboSwapEndPercent), parseTurboChoices(s.turboChoices, s.turboAllowUntilOff), tuning.turboSwapEndPercent);
     turboNow.suggested = !turboNow.active && turboSuggested(usage.weekUsed, usage.weekElapsed, usage.weekResetsAt, now);
     let topCpu: PanelView["topCpu"] = null;
     try {
@@ -124,9 +143,6 @@ export default async function plugin(bb: BbPluginApi) {
       const { stdout } = await execFileP("ps", ["-Ao", "pcpu,comm", "-r"], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 });
       topCpu = topCpuName(stdout);
     } catch { /* process list unavailable */ }
-    // Fast read for the panel: swap and free memory now, and the paging rate from the last tick (null until a tick has run since the plugin loaded).
-    const fresh = await readMemory({ paging: false });
-    const memory = { ...fresh, pageoutsPerSec: exec.last()?.signals.memory?.reading.pageoutsPerSec ?? null };
     const backingOff = override.pausedUntil > now;
     const activeTurbo = turboNow.active && turbo !== null ? turbo : null;
     return {
@@ -179,13 +195,16 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.rpc.register(coachRpcContract, {
     panel,
-    turboStart: async ({ limit, minutes }) => {
-      await exec.startTurboFrom("panel", limit ?? undefined, minutes === null ? undefined : minutes * 60_000);
-      return turboView(exec.state().turbo, Date.now(), null, false, false);
+    turboStart: async ({ limit, minutes, untilOff }) => {
+      const s = await settings.get();
+      if (untilOff === true && s.turboAllowUntilOff === false) throw new Error("Turbo until off is turned off in the settings");
+      await exec.startTurboFrom("panel", limit ?? undefined, untilOff === true ? null : minutes === null ? undefined : minutes * 60_000);
+      return turboView(exec.state().turbo, Date.now(), null, false, false, null, await turboChoices(), tuningFrom(s).turboSwapEndPercent);
     },
     turboStop: async () => {
       await exec.endTurbo("panel", "turned off from the panel");
-      return turboView(exec.state().turbo, Date.now(), null, false, false);
+      const s = await settings.get();
+      return turboView(exec.state().turbo, Date.now(), null, false, false, null, await turboChoices(), tuningFrom(s).turboSwapEndPercent);
     },
   });
 
@@ -208,30 +227,11 @@ export default async function plugin(bb: BbPluginApi) {
             return { exitCode: 0, stdout: line(await exec.tick(true)) };
           },
         }),
-        turbo: cliCommand({
-          summary: "Hold a chosen limit for a time box (default maxLimit for 2h), or `turbo off` to end it",
-          description: "Turbo writes the limit at once and ignores the CPU-hot rule. A manual limit change ends it. If the limit is above the overall cap, the cap is raised until Turbo ends. A limit above maxLimit, or above the core count, runs more threads than usual.",
-          positionals: [{ name: "action", description: "off ends Turbo", required: false }],
-          options: {
-            limit: { type: "integer", min: 1, max: TURBO_MAX_LIMIT, description: `Limit to hold (default maxLimit). Above maxLimit or the core count runs more threads than usual; the most is ${TURBO_MAX_LIMIT}` },
-            for: { type: "duration", defaultUnit: "h", min: 60_000, max: TURBO_MAX_MS, default: TURBO_DEFAULT_MS, description: "How long Turbo runs, e.g. 2h or 90m (default 2h, most 12h)" },
-          },
-          async run(input) {
-            if (input.positionals.action === "off") {
-              const ended = await exec.endTurbo("cli", "turned off from the CLI");
-              return { exitCode: 0, stdout: ended ? "Turbo off." : "Turbo was not on." };
-            }
-            if (input.positionals.action !== undefined) {
-              return { exitCode: 1, stderr: "Usage:\n  bb concurrency-coach turbo [--limit N] [--for 2h]\n  bb concurrency-coach turbo off" };
-            }
-            const { turbo: t, capRaised } = await exec.startTurboFrom("cli", input.options.limit, input.options.for);
-            const notes = [
-              capRaised ? `The overall cap is raised from ${t.globalBefore ?? "none"} until Turbo ends.` : "",
-              t.limit > os.cpus().length ? `The limit is above the ${os.cpus().length} cores: more threads than cores.` : "",
-              "It ends early at the weekly reset, if the quota nears its cap, or on a manual limit change.",
-            ].filter((n) => n !== "");
-            return { exitCode: 0, stdout: [turboSentence(t), ...notes].join(" ") };
-          },
+        turbo: turboCli({
+          startTurboFrom: (by, limit, durationMs) => exec.startTurboFrom(by, limit, durationMs),
+          endTurbo: (by, reason) => exec.endTurbo(by, reason),
+          allowUntilOff: async () => (await settings.get()).turboAllowUntilOff !== false,
+          cores: os.cpus().length,
         }),
         log: cliCommand({
           summary: "Show the most recent logged decisions and Turbo events, oldest first",

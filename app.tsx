@@ -126,10 +126,13 @@ function TurboControl({ view, onChanged }: { view: PanelView; onChanged: () => v
     const id = window.setInterval(() => setNow(Date.now()), COUNTDOWN_MS);
     return () => window.clearInterval(id);
   }, [turbo.active]);
-  function act(method: "turboStart" | "turboStop") {
+  /** Start Turbo for `minutes`, or until turned off when `minutes` is null; or stop it. */
+  function act(method: "turboStart" | "turboStop", minutes: number | null = null) {
     setBusy(true);
     setError(null);
-    const call = method === "turboStart" ? rpc.call("turboStart", { limit: null, minutes: null }) : rpc.call("turboStop", null);
+    const call = method === "turboStart"
+      ? rpc.call("turboStart", minutes === null ? { limit: null, minutes: null, untilOff: true } : { limit: null, minutes })
+      : rpc.call("turboStop", null);
     call.then(
       () => {
         setBusy(false);
@@ -147,20 +150,28 @@ function TurboControl({ view, onChanged }: { view: PanelView; onChanged: () => v
       {turbo.active ? (
         <div className="flex items-center justify-between gap-2 text-sm">
           <span>
-            On · limit {turbo.limit} · {leftMin} min left · started by {turbo.startedBy}
+            On · limit {turbo.limit} · {turbo.untilOff ? "until you turn it off" : `${leftMin} min left`} · started by {turbo.startedBy}
           </span>
           <button type="button" className="rounded border px-2 py-1 text-xs" disabled={busy} onClick={() => act("turboStop")}>
             Turn off
           </button>
         </div>
       ) : (
-        <div className="flex items-center justify-between gap-2 text-sm">
+        <div className="flex flex-col gap-2 text-sm">
           <span className="text-muted-foreground">
-            {turbo.suggested ? "Weekly quota is well under its time share with 3 h or less to the reset." : "Off."}
+            {turbo.blockedReason !== null ? `Can't start Turbo now: ${turbo.blockedReason}.` : turbo.suggested ? "Weekly quota is well under its time share with 3 h or less to the reset." : "Off."}
           </span>
-          <button type="button" className="rounded border px-2 py-1 text-xs" disabled={busy} onClick={() => act("turboStart")}>
-            Turbo to {view.limit.max} for 2 h
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Turbo to {view.limit.max} for</span>
+            {turbo.choices.map((c) => (
+              <button key={c.minutes ?? "off"} type="button" className="rounded border px-2 py-1 text-xs" disabled={busy || turbo.blockedReason !== null} onClick={() => act("turboStart", c.minutes)}>
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-muted-foreground">
+            Ends early at the weekly reset, at the quota cap, or under memory pressure{turbo.memoryEndPercent > 0 ? ` (or swap at ${turbo.memoryEndPercent}%)` : ""}.
+          </span>
         </div>
       )}
       {error !== null && <div className="text-xs text-destructive">{error}</div>}
