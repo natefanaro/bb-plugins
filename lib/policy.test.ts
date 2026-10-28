@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { NO_RESERVE } from "./test-tuning.ts";
 import { decide, parseUsage, weekProjected } from "./policy.ts";
 
-const base = { cur: 4, min: 1, max: 8, loadRatio: 0.7, fiveHourUsed: 30, fiveHourElapsed: 40, weekUsed: 30, weekElapsed: 40 };
+const base = { cur: 4, min: 1, max: 8, loadRatio: 0.7, fiveHourUsed: 30, fiveHourElapsed: 40, weekUsed: 30, weekElapsed: 40, tuning: NO_RESERVE };
 
 test("holds in the middle band", () => assert.equal(decide(base).next, 4));
 test("steps up when CPU is idle", () => assert.equal(decide({ ...base, loadRatio: 0.2 }).next, 5));
@@ -113,7 +114,6 @@ test("weekly window without a reset time has no elapsed signal", () => {
 });
 test("tolerates empty or odd input", () => assert.deepEqual(parseUsage(null, NOW), { fiveHourUsed: null, fiveHourElapsed: null, weekUsed: null, weekElapsed: null, weekResetsAt: null }));
 
-import { DEFAULT_TUNING } from "./tuning.ts";
 test("the default tuning gives the same decision as no tuning, on a spread of signals", () => {
   const samples = [
     { ...base, loadRatio: 0.1 },
@@ -122,16 +122,16 @@ test("the default tuning gives the same decision as no tuning, on a spread of si
     { ...base, loadRatio: 0.1, fiveHourUsed: 93, fiveHourElapsed: 95 },
     { ...base, loadRatio: 0.1, weekUsed: 44, weekElapsed: 40 },
   ];
-  for (const s of samples) assert.deepEqual(decide({ ...s, tuning: DEFAULT_TUNING }), decide(s));
+  for (const s of samples) assert.deepEqual(decide({ ...s, tuning: NO_RESERVE }), decide(s));
 });
 test("a changed tunable changes the decision: hotLoad 0.7 steps down at 0.75", () => {
   assert.equal(decide({ ...base, loadRatio: 0.75 }).next, 4, "default 0.85: hold");
-  assert.equal(decide({ ...base, loadRatio: 0.75, tuning: { ...DEFAULT_TUNING, hotLoad: 0.7 } }).next, 3);
+  assert.equal(decide({ ...base, loadRatio: 0.75, tuning: { ...NO_RESERVE, hotLoad: 0.7 } }).next, 3);
 });
 test("a changed quota threshold moves the drop to the minimum", () => {
   assert.doesNotMatch(decide({ ...base, weekUsed: 85 }).why, /quota near limit/, "default 90: not near the limit");
-  assert.equal(decide({ ...base, weekUsed: 85, tuning: { ...DEFAULT_TUNING, quotaWeekNear: 80 } }).next, 1);
-  assert.match(decide({ ...base, weekUsed: 85, tuning: { ...DEFAULT_TUNING, quotaWeekNear: 80 } }).why, /quota near limit/);
+  assert.equal(decide({ ...base, weekUsed: 85, tuning: { ...NO_RESERVE, quotaWeekNear: 80 } }).next, 1);
+  assert.match(decide({ ...base, weekUsed: 85, tuning: { ...NO_RESERVE, quotaWeekNear: 80 } }).why, /quota near limit/);
 });
 
 // --- Decision kinds, and the quota step a fleet takes one host at a time.
@@ -180,4 +180,37 @@ test("without quotaStepTaken the decisions are as before", () => {
   assert.equal(decide(weekAhead).next, 3);
   assert.equal(decide(fiveAhead).next, 3);
   assert.match(decide(weekAhead).why, /^weekly use ahead of time elapsed/);
+});
+
+test("Interactive reserve: 5-hour use at the agents' share holds the limit at the minimum", () => {
+  const d = decide({ ...base, tuning: { ...NO_RESERVE, reserveFiveHour: 60 }, fiveHourUsed: 60, fiveHourElapsed: 55 });
+  assert.deepEqual([d.next, d.kind], [1, "reserve"]);
+  assert.match(d.why, /Interactive reserve: 5 h window 60% used, agents' share is 60%/);
+  assert.notEqual(decide({ ...base, tuning: { ...NO_RESERVE, reserveFiveHour: 60 }, fiveHourUsed: 59, fiveHourElapsed: 55 }).kind, "reserve", "59% is below the share");
+});
+test("Interactive reserve: weekly use within the margin of the pace line holds the limit at the minimum", () => {
+  const t = { ...NO_RESERVE, reserveWeek: 1, reserveWeekMargin: 10 };
+  const d = decide({ ...base, tuning: t, weekUsed: 37, weekElapsed: 47 });
+  assert.deepEqual([d.next, d.kind], [1, "reserve"]);
+  assert.match(d.why, /week 37% used, agents' share ends at 37% \(pace 47% minus 10 points, at least 10%\)/);
+  assert.notEqual(decide({ ...base, tuning: t, weekUsed: 36, weekElapsed: 47 }).kind, "reserve");
+});
+test("Interactive reserve: off with 0, no weekly signal in the first hours, and unknown figures never hold", () => {
+  assert.notEqual(decide({ ...base, tuning: { ...NO_RESERVE, reserveFiveHour: 0 }, fiveHourUsed: 99, fiveHourElapsed: 99 }).kind, "reserve");
+  const on = { ...NO_RESERVE, reserveWeek: 1 };
+  assert.notEqual(decide({ ...base, tuning: on, weekUsed: 4, weekElapsed: 3 }).kind, "reserve", "week under the elapsed floor");
+  assert.notEqual(decide({ ...base, tuning: { ...on, reserveFiveHour: 60 }, fiveHourUsed: null, weekUsed: null, weekElapsed: null }).kind, "reserve");
+});
+test("Interactive reserve comes after the quota cap and before memory and pace rules", () => {
+  const t = { ...NO_RESERVE, reserveFiveHour: 60 };
+  assert.equal(decide({ ...base, tuning: t, fiveHourUsed: 95 }).kind, "quota-cap");
+  assert.equal(decide({ ...base, tuning: t, fiveHourUsed: 70, fiveHourElapsed: 10 }).kind, "reserve");
+});
+test("Interactive reserve: the weekly line has a floor of 10% used", () => {
+  const t = { ...NO_RESERVE, reserveWeek: 1, reserveWeekMargin: 10 };
+  assert.notEqual(decide({ ...base, tuning: t, weekUsed: 0, weekElapsed: 7 }).kind, "reserve", "0% used at 7% elapsed");
+  assert.notEqual(decide({ ...base, tuning: t, weekUsed: 9, weekElapsed: 7 }).kind, "reserve", "9% is under the floor");
+  const d = decide({ ...base, tuning: t, weekUsed: 12, weekElapsed: 7 });
+  assert.equal(d.kind, "reserve", "12% used at 7% elapsed");
+  assert.match(d.why, /ends at 10% \(pace 7% minus 10 points, at least 10%\)/);
 });

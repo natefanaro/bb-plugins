@@ -49,7 +49,7 @@ function world(over: Partial<World> = {}): World {
     logs: [],
     warns: [],
     store: new Map(),
-    settings: { enabled: true, host: "", minLimit: 1, maxLimit: 8, overrideBackoffMinutes: WINDOW_MIN, swapHotPercent: 70, memFreeMinPercent: 15 },
+    settings: { enabled: true, host: "", minLimit: 1, maxLimit: 8, overrideBackoffMinutes: WINDOW_MIN, swapHotPercent: 70, memFreeMinPercent: 15, reserveFiveHour: 0, reserveWeek: 0 },
     ...over,
   };
 }
@@ -892,4 +892,16 @@ test("a single-host Turbo that raised the cap ends with the cap restored even wh
   assert.equal(w.globalLimit, 4);
   assert.ok(w.logs.some((l) => "kind" in l && l.kind === "turbo" && l.action === "end" && /fleet mode started/.test(l.reason ?? "") && /overall cap restored to 4/.test(l.reason ?? "")));
   assert.equal(await e.endTurbo("scheduler", "again"), false, "a second call is a no-op");
+});
+
+test("Interactive reserve: every host drops to its minimum on the reserve, whatever the quota step", async () => {
+  const { a, b, da, db } = fleetPair();
+  for (const d of [da, db]) { const s = d.settings; d.settings = async () => ({ ...(await s()), reserveFiveHour: 60, reserveWeek: 1, reserveWeekMargin: 10 }); }
+  const ea = await createExecutor(da);
+  const eb = await createExecutor(db);
+  const ta = await ea.tick(true);
+  const tb = await eb.tick(true);
+  assert.deepEqual([a.writes, b.writes], [[1], [1]]);
+  assert.match(ta.why, /^Interactive reserve: week 60% used, agents' share ends at 34%/);
+  assert.match(tb.why, /^Interactive reserve:/);
 });

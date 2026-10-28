@@ -1,3 +1,4 @@
+import { NO_RESERVE } from "./test-tuning.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { freeMemoryLow, memoryHot, memorySentence, parseFreePct, parsePageoutsPerSec, parseSwapUsage, swapThrashing, type MemoryReading } from "./memory.ts";
@@ -70,7 +71,7 @@ test("the sentence names only the known parts", () => {
   assert.equal(memorySentence({ swapUsedPct: null, freePct: null, pageoutsPerSec: null }), "");
 });
 
-const base: Signals = { cur: 4, min: 1, max: 8, loadRatio: 0.7, fiveHourUsed: 30, fiveHourElapsed: 40, weekUsed: 30, weekElapsed: 40 };
+const base: Signals = { cur: 4, min: 1, max: 8, loadRatio: 0.7, fiveHourUsed: 30, fiveHourElapsed: 40, weekUsed: 30, weekElapsed: 40, tuning: NO_RESERVE };
 const low = { reading: { swapUsedPct: 40, freePct: 9, pageoutsPerSec: 0 }, thresholds: T };
 const thrash = { reading: { swapUsedPct: 95, freePct: 40, pageoutsPerSec: 300 }, thresholds: T };
 
