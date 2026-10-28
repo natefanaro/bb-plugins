@@ -107,6 +107,25 @@ export const panelSchema = z.object({
     changes: z.array(z.object({ ageSec: z.number(), from: z.number(), to: z.number(), why: z.string() })),
   }),
   topCpu: z.object({ name: z.string(), cpuPct: z.number() }).nullable(),
+  /** Set when Coach manages every connected host (the host setting is blank and more than one is connected). Null in single-host mode. */
+  fleet: z.object({
+    hosts: z.array(z.object({
+      name: z.string(),
+      /** The host's limit now. */
+      current: z.number().nullable(),
+      /** The range this host is held to. */
+      min: z.number(),
+      max: z.number(),
+      /** CPU load per core and memory on that host at its last tick. Null before the first tick. */
+      load: z.number().nullable(),
+      freePct: z.number().nullable(),
+      swapUsedPct: z.number().nullable(),
+      /** The reason of that host's last tick. Null before the first tick or when it could not run. */
+      why: z.string().nullable(),
+      /** Why that host was not stepped at its last tick (readings unreadable). It is held, never stepped on a guess. */
+      error: z.string().nullable(),
+    })),
+  }).nullable(),
 });
 
 export type PanelView = z.infer<typeof panelSchema>;

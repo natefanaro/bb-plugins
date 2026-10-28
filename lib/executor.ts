@@ -38,14 +38,18 @@ export interface Deps {
   /** Urgent threads now (their task has priority urgent): running and waiting behind the limit. Null when it cannot be read. */
   urgent(): Promise<UrgentCount | null>;
   memory(): Promise<MemoryReading>;
-  /** 1-minute load average and the CPU count. */
-  load(): { load1: number; cpus: number };
+  /** 1-minute load average and the CPU count of the governed host. A remote host answers asynchronously; a failed read throws and the tick for that host does not run. */
+  load(): { load1: number; cpus: number } | Promise<{ load1: number; cpus: number }>;
   now(): number;
   store: { get(key: string): Promise<unknown>; set(key: string, value: unknown): Promise<void>; delete(key: string): Promise<void> };
   /** Append one decision or Turbo line to the log. May throw; the executor reports that and carries on. */
   appendLog(line: LogLine): void;
   warn(message: string): void;
+  /** Shared by the hosts of one round when several are managed: the first host to take the quota-pace step down sets `takenBy`, and the rest hold. Absent for a single host. */
+  quotaTurn?: QuotaTurn;
 }
+
+export interface QuotaTurn { takenBy: string | null }
 
 export interface Tick { applied: boolean; host: string; cur: number; next: number; why: string; signals: Signals; error?: string; opencodeRunning: number | null; headroom: number;
   /** Urgent threads now, the slots of the urgent lane in effect, and when urgent work first waited (null when none waits). */
@@ -179,7 +183,7 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     const host = pickHost(cfg, s.host);
     const min = Math.max(1, Math.floor(s.minLimit)), max = Math.max(min, Math.floor(s.maxLimit));
     const cur = host.effectiveLimit ?? max;
-    const { load1, cpus } = deps.load();
+    const { load1, cpus } = await deps.load();
     let usage: ReturnType<typeof parseUsage> = { fiveHourUsed: null, fiveHourElapsed: null, weekUsed: null, weekElapsed: null, weekResetsAt: null };
     try { usage = parseUsage(await deps.usage(), deps.now()); } catch { /* quota unknown: scale on CPU alone */ }
     let memory: MemoryReading = NO_MEMORY;
@@ -207,7 +211,12 @@ export async function createExecutor(deps: Deps): Promise<Executor> {
     const endReason = turbo === null ? null : turboEndReason(turbo, now, usage.weekResetsAt, quotaNear(signals, tuning), turboManual, turboMemoryEndReason(memory, thresholds, tuning.turboSwapEndPercent));
     const g = gate(override, cur, now, Math.max(0, s.overrideBackoffMinutes) * 60_000);
     // Turbo plans on the exact host limit; everything else plans on Claude's paced limit.
-    const plan = planTick({ apply, cur: turbo !== null ? cur : claudeCur, turbo, endReason, lastSet: override.lastSet, decision: decide({ ...signals, cur: turbo !== null ? cur : claudeCur }), gate: g });
+    const decision = decide({ ...signals, cur: turbo !== null ? cur : claudeCur, ...(deps.quotaTurn?.takenBy ? { quotaStepTaken: deps.quotaTurn.takenBy } : {}) });
+    const plan = planTick({ apply, cur: turbo !== null ? cur : claudeCur, turbo, endReason, lastSet: override.lastSet, decision, gate: g });
+    // The first host that steps down on the quota pace in this round takes the step for the account. Status ticks and backed-off hosts do not take it.
+    if (apply && plan.kind === "normal" && g.apply && deps.quotaTurn && deps.quotaTurn.takenBy === null && (decision.kind === "quota-5h" || decision.kind === "quota-week") && decision.next < claudeCur) {
+      deps.quotaTurn.takenBy = host.name;
+    }
 
     // A tick that ends Turbo restores first, then writes nothing; the next tick decides from fresh readings.
     if (plan.kind === "turbo-ended") {

@@ -14,12 +14,12 @@ const open: Gate = { apply: true, state: { lastSet: 4, pausedUntil: 0 }, why: nu
 const held: Gate = { apply: false, state: { lastSet: 4, pausedUntil: T0 + 60_000 }, why: "manual limit change: backing off, 1 min left" };
 
 function input(over: Partial<PlanInput> = {}): PlanInput {
-  return { apply: true, cur: 4, turbo: null, endReason: null, lastSet: 4, decision: { next: 5, why: "CPU idle (load/cpu 0.2)" }, gate: open, ...over };
+  return { apply: true, cur: 4, turbo: null, endReason: null, lastSet: 4, decision: { next: 5, why: "CPU idle (load/cpu 0.2)", kind: "raise" }, gate: open, ...over };
 }
 
 test("end then write in one tick: the tick that ends Turbo writes nothing (the restore is not overwritten)", () => {
   // Turbo at 6 with the cap raised from 4; the weekly reset ends it; the CPU rule would want 5.
-  const p = planTick(input({ turbo: turbo(), endReason: "weekly quota reset", cur: 6, lastSet: 6, decision: { next: 5, why: "CPU idle" } }));
+  const p = planTick(input({ turbo: turbo(), endReason: "weekly quota reset", cur: 6, lastSet: 6, decision: { next: 5, why: "CPU idle", kind: "raise" } }));
   assert.equal(p.kind, "turbo-ended");
   assert.equal(p.write, null);
   assert.match(p.why, /Turbo ended: weekly quota reset\. The next tick decides\./);
@@ -55,25 +55,25 @@ test("Turbo holds when its limit is in place, and records the baseline with no h
 });
 
 test("Turbo ignores the CPU rule and the back-off gate while it runs", () => {
-  const p = planTick(input({ turbo: turbo(), cur: 4, lastSet: 4, gate: held, decision: { next: 3, why: "CPU hot" } }));
+  const p = planTick(input({ turbo: turbo(), cur: 4, lastSet: 4, gate: held, decision: { next: 3, why: "CPU hot", kind: "cpu-hot" } }));
   assert.equal(p.kind, "turbo");
   assert.equal(p.write, 6);
 });
 
 test("off: the scheduler's rule writes through the back-off gate", () => {
-  const p = planTick(input({ cur: 4, decision: { next: 5, why: "CPU idle" } }));
+  const p = planTick(input({ cur: 4, decision: { next: 5, why: "CPU idle", kind: "raise" } }));
   assert.deepEqual(p, { kind: "normal", next: 5, why: "CPU idle", write: 5 });
 });
 
 test("off: a held back-off writes nothing and shows its reason", () => {
-  const p = planTick(input({ cur: 4, gate: held, decision: { next: 5, why: "CPU idle" } }));
+  const p = planTick(input({ cur: 4, gate: held, decision: { next: 5, why: "CPU idle", kind: "raise" } }));
   assert.equal(p.write, null);
   assert.equal(p.next, 4);
   assert.equal(p.why, held.why);
 });
 
 test("off: status changes nothing", () => {
-  const p = planTick(input({ apply: false, cur: 4, decision: { next: 5, why: "CPU idle" } }));
+  const p = planTick(input({ apply: false, cur: 4, decision: { next: 5, why: "CPU idle", kind: "raise" } }));
   assert.equal(p.write, null);
   assert.equal(p.next, 5, "shows the rule's choice");
 });

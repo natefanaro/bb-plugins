@@ -191,11 +191,11 @@ function ConcurrencyCoachPage() {
     <div className="flex flex-col gap-5 p-4">
       <header className="flex items-baseline justify-between">
         <div>
-          <div className="text-xs text-muted-foreground">{view.host ?? "No connected host"}</div>
+          <div className="text-xs text-muted-foreground">{view.fleet !== null ? "Every connected host" : (view.host ?? "No connected host")}</div>
           <div className="text-3xl font-medium">
-            {limit.current ?? "?"}
+            {view.fleet === null ? (limit.current ?? "?") : view.fleet.hosts.map((h) => h.current ?? "?").join(" + ")}
             <span className="ml-2 text-sm font-normal text-muted-foreground">
-              threads · range {limit.min}–{limit.max}
+              {view.fleet === null ? `threads · range ${limit.min}–${limit.max}` : `threads on ${view.fleet.hosts.length} hosts`}
               {limit.globalLimit !== null && ` · overall cap ${limit.globalLimit}`}
             </span>
           </div>
@@ -232,6 +232,27 @@ function ConcurrencyCoachPage() {
 
       <TurboControl view={view} onChanged={refresh} />
 
+      {view.fleet !== null && (
+        <Section title="Hosts">
+          {view.fleet.hosts.map((h) => (
+            <div key={h.name} className="flex flex-col gap-1">
+              <div className="flex justify-between text-sm">
+                <span>{h.name}</span>
+                <span className="text-muted-foreground">{h.current ?? "?"} threads · range {h.min}–{h.max}</span>
+              </div>
+              {h.load !== null && <Bar value={h.load} max={Math.max(1.5, inputs.load.hot * 1.5)} ticks={[inputs.load.idle, inputs.load.hot]} tone={h.load > inputs.load.hot ? "bg-destructive" : "bg-primary"} />}
+              {h.freePct !== null && <Bar value={h.freePct} max={100} ticks={[inputs.memory.memFreeMinPercent]} tone={h.freePct < inputs.memory.memFreeMinPercent ? "bg-destructive" : "bg-primary"} />}
+              <div className={`text-xs ${h.error !== null ? "text-destructive" : "text-muted-foreground"}`}>
+                {h.error !== null ? `Not stepped: ${h.error}` : h.why ?? "No tick yet"}
+                {h.load !== null && ` · CPU ${h.load.toFixed(2)} per core`}
+                {h.freePct !== null && ` · free memory ${h.freePct}%`}
+                {h.swapUsedPct !== null && ` · swap ${h.swapUsedPct}%`}
+              </div>
+            </div>
+          ))}
+        </Section>
+      )}
+
       <Section title="What limits it">
         <div className="text-sm">{why.explain.line}</div>
         <div className="text-xs text-muted-foreground">Last decision: {why.sentence}</div>
@@ -243,6 +264,8 @@ function ConcurrencyCoachPage() {
       </Section>
 
       <Section title="Inputs">
+        {view.fleet === null && (
+          <>
         <div className="flex flex-col gap-1">
           <div className="flex justify-between text-sm">
             <span>CPU load per core</span>
@@ -276,6 +299,8 @@ function ConcurrencyCoachPage() {
             Capacity (memory) holds the limit when free memory is under {inputs.memory.memFreeMinPercent}%, or swap is at {inputs.memory.swapHotPercent}% or more while paging out. Swap alone is not pressure. Quota (pace) holds it when use runs ahead of time elapsed.
           </div>
         </div>
+          </>
+        )}
         <Quota label="5-hour window" used={inputs.fiveHour.used} elapsed={inputs.fiveHour.elapsed} projected={inputs.fiveHour.projected} state={inputs.fiveHour.state} />
         <Quota label="Weekly window" used={inputs.week.used} elapsed={inputs.week.elapsed} projected={inputs.week.projected} state={inputs.week.state} />
       </Section>
@@ -371,7 +396,7 @@ function CoachWindow() {
         <CoachIcon className="h-5 w-5 text-foreground" />
         <div className="text-sm font-medium">Concurrency Coach</div>
         <div className={`ml-auto text-2xl font-medium tabular-nums ${colour}`} title={label}>
-          {view.limit.current ?? "?"}
+          {view.fleet === null ? (view.limit.current ?? "?") : view.fleet.hosts.reduce((n, h) => n + (h.current ?? 0), 0)}
         </div>
       </div>
       {(view.limit.opencode.headroom > 0 || (view.limit.opencode.running ?? 0) > 0 || view.limit.urgent.headroom > 0) && (
@@ -384,8 +409,22 @@ function CoachWindow() {
       {view.limit.urgent.starved && <div className="text-xs text-destructive">Urgent work waiting over {view.limit.urgent.reportMinutes} min.</div>}
       {view.limit.opencode.warning !== null && <div className="text-xs text-destructive">{view.limit.opencode.warning}</div>}
 
-      <Slots view={view} />
-      <HistoryStrip view={view} compact />
+      {view.fleet === null ? (
+        <>
+          <Slots view={view} />
+          <HistoryStrip view={view} compact />
+        </>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {view.fleet.hosts.map((h) => (
+            <div key={h.name} className="grid grid-cols-[5.5rem_1fr_3rem] items-center gap-2 text-xs" title={`${h.name}: ${h.error !== null ? `not stepped: ${h.error}` : h.why ?? "no tick yet"}. Range ${h.min}-${h.max}. Free memory ${h.freePct ?? "?"}%, swap ${h.swapUsedPct ?? "?"}%.`}>
+              <span className="truncate text-muted-foreground">{h.name}</span>
+              <Bar value={h.load ?? 0} max={Math.max(1.5, load.hot * 1.5)} ticks={[load.idle, load.hot]} tone={h.error !== null || (h.load ?? 0) > load.hot ? "bg-destructive" : "bg-primary"} />
+              <span className="text-right tabular-nums">{h.current ?? "?"}/{h.max}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="flex flex-col gap-2 border-t pt-2">
         <GaugeRow label="5 h" value={fiveHour.used} max={100} markAt={fiveHour.elapsed} tone={quotaTone(fiveHour.state)} text={pct(fiveHour.used)} hint="5-hour quota used. The marker is time elapsed in the window; red when use runs ahead of it." />

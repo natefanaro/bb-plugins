@@ -133,3 +133,51 @@ test("a changed quota threshold moves the drop to the minimum", () => {
   assert.equal(decide({ ...base, weekUsed: 85, tuning: { ...DEFAULT_TUNING, quotaWeekNear: 80 } }).next, 1);
   assert.match(decide({ ...base, weekUsed: 85, tuning: { ...DEFAULT_TUNING, quotaWeekNear: 80 } }).why, /quota near limit/);
 });
+
+// --- Decision kinds, and the quota step a fleet takes one host at a time.
+const hotMemory = { reading: { swapUsedPct: 80, freePct: 10, pageoutsPerSec: 0 }, thresholds: { swapHotPercent: 70, memFreeMinPercent: 15 } };
+const weekAhead = { ...base, weekUsed: 60, weekElapsed: 44 };
+const fiveAhead = { ...base, loadRatio: 0.1, fiveHourUsed: 70, fiveHourElapsed: 30 };
+
+test("each rule names its kind", () => {
+  assert.equal(decide(base).kind, "hold");
+  assert.equal(decide({ ...base, loadRatio: 0.2 }).kind, "raise");
+  assert.equal(decide({ ...base, loadRatio: 0.95 }).kind, "cpu-hot");
+  assert.equal(decide({ ...base, weekUsed: 91 }).kind, "quota-cap");
+  assert.equal(decide({ ...base, memory: hotMemory }).kind, "memory");
+  assert.equal(decide(fiveAhead).kind, "quota-5h");
+  assert.equal(decide(weekAhead).kind, "quota-week");
+  assert.equal(decide({ ...base, loadRatio: 0.2, weekUsed: 46, weekElapsed: 42 }).kind, "hold-week");
+});
+
+test("quotaStepTaken: a host holds instead of taking a second pace step on the same quota", () => {
+  const d = decide({ ...weekAhead, quotaStepTaken: "macstudio" });
+  assert.equal(d.next, 4, "no step");
+  assert.equal(d.kind, "hold");
+  assert.match(d.why, /^hold: quota step taken on macstudio this tick \(weekly use ahead of time elapsed/);
+  const f = decide({ ...fiveAhead, quotaStepTaken: "macstudio" });
+  assert.equal(f.next, 4);
+  assert.match(f.why, /quota step taken on macstudio this tick \(5-hour use ahead/);
+});
+
+test("quotaStepTaken: the host's own CPU rule still applies, and it does not raise while the quota is ahead", () => {
+  const hot = decide({ ...weekAhead, loadRatio: 0.95, quotaStepTaken: "macstudio" });
+  assert.equal(hot.next, 3);
+  assert.equal(hot.kind, "cpu-hot");
+  const idle = decide({ ...weekAhead, loadRatio: 0.1, quotaStepTaken: "macstudio" });
+  assert.equal(idle.next, 4, "an idle host does not raise on a quota that is ahead");
+  assert.equal(idle.kind, "hold");
+});
+
+test("quotaStepTaken does not hold the rules that are not the shared pace step", () => {
+  const taken = { quotaStepTaken: "macstudio" };
+  assert.equal(decide({ ...base, weekUsed: 91, ...taken }).next, 1, "near the quota cap every host drops to its minimum");
+  assert.equal(decide({ ...base, memory: hotMemory, ...taken }).next, 3, "memory pressure is this host's own");
+  assert.equal(decide({ ...base, loadRatio: 0.95, ...taken }).next, 3, "CPU hot is this host's own");
+});
+
+test("without quotaStepTaken the decisions are as before", () => {
+  assert.equal(decide(weekAhead).next, 3);
+  assert.equal(decide(fiveAhead).next, 3);
+  assert.match(decide(weekAhead).why, /^weekly use ahead of time elapsed/);
+});

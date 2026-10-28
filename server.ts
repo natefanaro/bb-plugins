@@ -19,6 +19,9 @@ import { coachRpcContract, type PanelView, type TurboView } from "./lib/contract
 import { parseTurboChoices, type TurboChoice } from "./lib/turbo-choices.ts";
 import { turboCli } from "./lib/turbo-cli.ts";
 import { explainLimit } from "./lib/explain.ts";
+import { createFleet, type HostResult } from "./lib/fleet-runner.ts";
+import { fleetMode, parseHostLimits, profileFor } from "./lib/fleet.ts";
+import { hostContract } from "./lib/host-contract.ts";
 
 const execFileP = promisify(execFile);
 
@@ -52,6 +55,8 @@ export default async function plugin(bb: BbPluginApi) {
     // The urgent lane: threads whose task has priority urgent get reserved slots above the paced limit.
     urgentSlots: { type: "number", label: "Slots reserved above the paced limit for urgent threads (0 turns the lane off; up to 5)", default: 1 },
     urgentReportMinutes: { type: "number", label: "Minutes urgent work may wait before the panel and log flag it (0 = never)", default: 120 },
+    // Several hosts: each host's own range. Used when the host setting is blank and more than one host is connected.
+    hostLimits: { type: "string", label: "Per-host limit ranges when every connected host is managed, such as macstudio:2-12,macmini:1-6 (hosts not listed use the minimum and maximum above)", default: "" },
   });
 
   // The executor holds the back-off and Turbo (kept in plugin storage) and carries out each tick. See lib/executor.ts.
@@ -68,6 +73,29 @@ export default async function plugin(bb: BbPluginApi) {
     appendLog: (line) => appendDecision(logFile(), line),
     warn: (message) => bb.log.warn(message),
   });
+
+  // Every connected host, when the host setting is blank and more than one is connected: one executor per host on that host's own readings (the host entry), kept apart from the single-host state.
+  const hostClient = bb.hosts.experimental_client({ contract: hostContract });
+  const fleet = await createFleet({
+    settings: () => settings.get(),
+    limits: { get: getLimits, set: setHostLimit, restore: restoreLimits },
+    usage: getUsage,
+    readings: (hostId) => hostClient.call("readings", null, { hostId, timeoutMs: 30_000 }),
+    now: () => Date.now(),
+    store: { get: (key) => bb.storage.kv.get(key), set: (key, value) => bb.storage.kv.set(key, value), delete: (key) => bb.storage.kv.delete(key) },
+    appendLog: (l) => appendDecision(logFile(), l),
+    warn: (message) => bb.log.warn(message),
+    // A Turbo started in single-host mode is never ticked once fleet mode runs: end it first, which also restores the overall cap it raised.
+    beforeRound: async () => { await exec.endTurbo("scheduler", "fleet mode started: Turbo is single-host"); },
+  });
+  /** Fleet mode now? An unreadable limit configuration is left to the single-host path, which reports it. */
+  async function inFleetMode(): Promise<boolean> {
+    try {
+      const s = await settings.get();
+      const cfg = await getLimits();
+      return fleetMode(s.host, cfg.hosts.filter((h) => h.status === "connected").length);
+    } catch { return false; }
+  }
 
   const line = (t: Tick) =>
     `${t.host}: ${t.cur} -> ${t.next}${t.applied ? " (applied)" : t.next === t.cur ? "" : " (dry run)"}  ${t.why}\n` +
@@ -95,8 +123,18 @@ export default async function plugin(bb: BbPluginApi) {
     return parseTurboChoices(s.turboChoices, s.turboAllowUntilOff);
   }
 
+  /** One line per host for the CLI: the tick, or why the host was not stepped. */
+  const fleetLines = (results: HostResult[]) =>
+    results.length === 0 ? "no connected hosts" : results.map((r) => (r.tick !== null ? line(r.tick) : `${r.host}: not stepped: ${r.error}`)).join("\n");
+
   bb.background.schedule("adjust", "*/5 * * * *", async () => {
     if (!(await settings.get()).enabled) return;
+    if (await inFleetMode()) {
+      const results = await fleet.round(true);
+      // The round carries on past a host it cannot read; it fails only when no host could be stepped.
+      if (results.length > 0 && results.every((r) => r.error !== null)) throw new Error(`no host could be stepped: ${results.map((r) => `${r.host}: ${r.error}`).join("; ")}`);
+      return;
+    }
     try { await exec.tick(true); } catch (e) { exec.setLastError(String(e)); throw e; }
   });
 
@@ -111,8 +149,10 @@ export default async function plugin(bb: BbPluginApi) {
     let host: string | null = null;
     let current: number | null = null;
     let globalLimit: number | null = null;
+    let panelCfg: LimitCfg | null = null;
     try {
       const cfg = await getLimits();
+      panelCfg = cfg;
       globalLimit = cfg.globalLimit;
       const connected = cfg.hosts.filter((h) => h.status === "connected");
       const h = s.host ? connected.find((x) => x.name === s.host || x.id === s.host) : connected.length === 1 ? connected[0] : undefined;
@@ -140,8 +180,11 @@ export default async function plugin(bb: BbPluginApi) {
     // Fast read for the panel: swap and free memory now, and the paging rate from the last tick (null until a tick has run since the plugin loaded).
     const fresh = await readMemory({ paging: false });
     const memory = { ...fresh, pageoutsPerSec: exec.last()?.signals.memory?.reading.pageoutsPerSec ?? null };
+    const fleetOn = panelCfg !== null && fleetMode(s.host, panelCfg.hosts.filter((h) => h.status === "connected").length);
     const turboNow = turboView(turbo, now, usage.weekResetsAt, near, manual, turboMemoryEndReason(memory, { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec }, tuning.turboSwapEndPercent), parseTurboChoices(s.turboChoices, s.turboAllowUntilOff), tuning.turboSwapEndPercent);
     turboNow.suggested = !turboNow.active && turboSuggested(usage.weekUsed, usage.weekElapsed, usage.weekResetsAt, now);
+    // Turbo holds one host's limit; with every host managed there is no single host to hold, so the buttons are held back with the reason.
+    if (fleetOn && !turboNow.active) turboNow.blockedReason = "Turbo is single-host: set the host setting to one host";
     let topCpu: PanelView["topCpu"] = null;
     try {
       // The full process list is ~220 KB and grows with the machine; a small buffer made the call fail and the panel show "Not available".
@@ -150,10 +193,36 @@ export default async function plugin(bb: BbPluginApi) {
     } catch { /* process list unavailable */ }
     // What limits the limit now: the same signals the scheduler reads, against Claude's own limit (the host limit without the opencode headroom).
     const claudeNow = current === null ? min : current - exec.state().headroom;
-    const explain = explainLimit(
+    const explainSingle = explainLimit(
       { cur: claudeNow, min, max, loadRatio, ...usage, memory: { reading: memory, thresholds: { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec } }, tuning },
       turboNow.active,
     );
+    const hostCount = panelCfg === null ? 0 : panelCfg.hosts.filter((h) => h.status === "connected").length;
+    const explain = fleetOn ? { cause: "none" as const, line: `Managing ${hostCount} hosts, each on its own load and memory; one host takes the quota pace step each round.` } : explainSingle;
+    // Every connected host with its range and its last tick, when all are managed.
+    let fleetView: PanelView["fleet"] = null;
+    if (fleetOn && panelCfg !== null) {
+      const profiles = parseHostLimits(s.hostLimits);
+      const results = new Map(fleet.last().map((r) => [r.hostId, r]));
+      fleetView = {
+        hosts: panelCfg.hosts.filter((h) => h.status === "connected").map((h) => {
+          const profile = profileFor(h.name, profiles, { min, max });
+          const r = results.get(h.id);
+          const sig = r?.tick?.signals;
+          return {
+            name: h.name,
+            current: h.effectiveLimit,
+            min: profile.min,
+            max: profile.max,
+            load: sig?.loadRatio ?? null,
+            freePct: sig?.memory?.reading.freePct ?? null,
+            swapUsedPct: sig?.memory?.reading.swapUsedPct ?? null,
+            why: r?.tick?.why ?? null,
+            error: r?.error ?? null,
+          };
+        }),
+      };
+    }
     const backingOff = override.pausedUntil > now;
     const activeTurbo = turboNow.active && turbo !== null ? turbo : null;
     return {
@@ -213,6 +282,7 @@ export default async function plugin(bb: BbPluginApi) {
       },
       history: history(records, now, 24 * 3600_000),
       topCpu,
+      fleet: fleetView,
     };
   }
 
@@ -240,6 +310,10 @@ export default async function plugin(bb: BbPluginApi) {
           summary: "Show what Concurrency Coach would do now (changes nothing)",
           options: { json: { type: "boolean", description: "Print JSON" } },
           async run(input) {
+            if (await inFleetMode()) {
+              const results = await fleet.round(false);
+              return { exitCode: 0, stdout: input.options.json ? JSON.stringify({ hosts: results.map((r) => ({ host: r.host, error: r.error, tick: r.tick })), lastScheduled: fleet.last().map((r) => ({ host: r.host, tick: r.tick, error: r.error })) }, null, 2) : fleetLines(results) };
+            }
             const t = await exec.tick(false);
             return { exitCode: 0, stdout: input.options.json ? JSON.stringify({ ...t, lastScheduled: exec.last() }, null, 2) : line(t) };
           },
@@ -247,6 +321,7 @@ export default async function plugin(bb: BbPluginApi) {
         tick: cliCommand({
           summary: "Run one adjustment now and apply it",
           async run() {
+            if (await inFleetMode()) return { exitCode: 0, stdout: fleetLines(await fleet.round(true)) };
             return { exitCode: 0, stdout: line(await exec.tick(true)) };
           },
         }),
