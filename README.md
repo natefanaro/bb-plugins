@@ -107,6 +107,21 @@ opencode threads (providerId `acp-opencode`) are not limited by Claude quota pac
 - The count comes from `bb agent-tv status --all-projects --json`: `acp-opencode` rows that are busy or queued (status `pending` or `queued`). A queued run counts too, so it earns its slot before it starts. Idle rows do not count. If the feed cannot be read, the headroom in effect is kept.
 - The headroom is written on the next scheduled tick (up to 5 minutes), not the moment a run starts. A run that starts between ticks waits for that tick to get its slot.
 
+## Urgent lane
+
+Threads whose task has priority **urgent** (and is todo, in progress or in review) get slots reserved above Claude's paced limit, so a pace hold does not starve a release blocker. It works like the opencode headroom: the host limit is Claude's paced limit, plus the opencode headroom, plus one slot per urgent thread that is running or waiting, up to `urgentSlots`.
+
+- `urgentSlots` (default 1, 0 to 5): slots reserved for urgent threads. **It is on by default**, so the lane is live as soon as this is installed. 0 turns it off, and then no task or feed is read for it.
+- **How wide "urgent" is:** every task in every tracker project with priority urgent that is todo, in progress or in review, and any thread attached to one. On 2026-10-28 that was 24 tasks, most with attached threads, so the lane opens whenever any of those threads runs or waits. If that is too wide, lower the priority of tasks that are not blockers, or set `urgentSlots` to 0.
+- `urgentReportMinutes` (default 120, 0 to 1440): how long urgent work may wait behind the limit before it is flagged. The flag shows in the reason (`urgent work has waited 2 h 0 min`), in the panel and footer window, and the decision log carries `urgentRunning`, `urgentWaiting` and `urgentHeadroom`. Coach does not message anyone; something that reads the log or `status` can.
+- The urgent threads come from the tasks tracker (`bb tasks list --priority urgent`, then each task's attached threads) matched against the agent feed. The tracker is read without the calling thread's project scope, so every project is seen (with the scope, the list fails with `project_ambiguous` when a project links several trackers, or silently covers one project). `--active` is not used: it keeps only threads that are starting or working, and a waiting thread is neither.
+- The task-to-thread map is kept for 10 minutes (a full scan is about 5 s), so a thread newly attached to an urgent task is picked up within that time. With no running or waiting thread nothing is looked up.
+- **If the tasks or the feed cannot be read**, the lane stays as it was and the reason, the panel, the footer window and the decision log say `urgent: unreadable`. A map up to 30 minutes old is used if only a refresh fails.
+- The panel shows the urgent slot as its own cell (heavier ring), the reason and header show `Claude N + opencode M + urgent U`, and the count of urgent threads running and waiting.
+- Coach sets how many slots exist, not which queued thread takes one: the host starts waiting messages in its own order, so an urgent thread gets the benefit of the extra slot but is not placed first. Moving it ahead would need priority in the limit plugin.
+- Turbo holds its exact limit with no lane. A manual change drops the lane. If the overall cap clamps the write, the urgent slot is kept before the opencode slots.
+- Rollback: the total is still stored under the old `headroom` key, so an older build reads it (as opencode headroom).
+
 ## Decision log
 
 Every applied tick (scheduled or from `tick`) appends one JSON line to `~/.bb-studio/concurrency-pacer/decisions.jsonl` (owner-only): time, host, the limit before and after, whether it was written, the reason, load, 5-hour and weekly quota, the manual-change state, and whether Turbo was on. Turbo starts and ends are written as their own lines with who did it. `status` is not logged. The file moves to `decisions.jsonl.1` at about 1 MB, replacing the previous rotation. Set `CONCURRENCY_PACER_DIR` to move it.

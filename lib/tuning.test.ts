@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { DEFAULT_TUNING, tuningFrom } from "./tuning.ts";
 
 test("the defaults are the values the plugin shipped with", () => {
-  assert.deepEqual(DEFAULT_TUNING, { hotLoad: 0.85, idleLoad: 0.5, quotaFiveHourNear: 92, quotaWeekNear: 90, slackFiveHour: 25, slackWeek: 6, raiseSlackWeek: 3, pageoutHotPerSec: 100, opencodeSlots: 1, turboSwapEndPercent: 0 });
+  assert.deepEqual(DEFAULT_TUNING, { hotLoad: 0.85, idleLoad: 0.5, quotaFiveHourNear: 92, quotaWeekNear: 90, slackFiveHour: 25, slackWeek: 6, raiseSlackWeek: 3, pageoutHotPerSec: 100, opencodeSlots: 1, turboSwapEndPercent: 0, urgentSlots: 1, urgentReportMinutes: 120 });
 });
 test("tuningFrom takes the settings and falls back to the default for a missing or non-numeric value", () => {
   assert.deepEqual(tuningFrom({}), DEFAULT_TUNING);
@@ -61,4 +61,21 @@ test("turboSwapEndPercent is 0 (off, the default) or 50 to 100; anything else fa
   assert.equal(tuningFrom({ turboSwapEndPercent: Number.NaN }).turboSwapEndPercent, 0);
   assert.equal(tuningFrom({ turboSwapEndPercent: "90" }).turboSwapEndPercent, 0);
   assert.equal(tuningFrom({}).turboSwapEndPercent, 0);
+});
+
+test("urgentSlots is a whole number 0 to 5 (0 turns the lane off); anything else falls back to 1", () => {
+  assert.equal(tuningFrom({ urgentSlots: 0 }).urgentSlots, 0);
+  assert.equal(tuningFrom({ urgentSlots: 5 }).urgentSlots, 5);
+  assert.equal(tuningFrom({ urgentSlots: 6 }).urgentSlots, 1);
+  assert.equal(tuningFrom({ urgentSlots: 1.5 }).urgentSlots, 1);
+  assert.equal(tuningFrom({ urgentSlots: -1 }).urgentSlots, 1);
+  assert.equal(tuningFrom({ urgentSlots: "2" }).urgentSlots, 1);
+});
+
+test("urgentReportMinutes is a whole number 0 to 1440 (0 never flags); anything else falls back to 120", () => {
+  assert.equal(tuningFrom({ urgentReportMinutes: 0 }).urgentReportMinutes, 0);
+  assert.equal(tuningFrom({ urgentReportMinutes: 1440 }).urgentReportMinutes, 1440);
+  assert.equal(tuningFrom({ urgentReportMinutes: 1441 }).urgentReportMinutes, 120);
+  assert.equal(tuningFrom({ urgentReportMinutes: 30.5 }).urgentReportMinutes, 120);
+  assert.equal(tuningFrom({ urgentReportMinutes: Number.NaN }).urgentReportMinutes, 120);
 });

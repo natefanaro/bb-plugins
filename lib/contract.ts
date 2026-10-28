@@ -50,6 +50,21 @@ export const panelSchema = z.object({
       /** Plain words when more opencode threads run than the slots; null otherwise. */
       warning: z.string().nullable(),
     }),
+    /** The urgent lane: slots reserved above the paced limit for threads whose task has priority urgent. */
+    urgent: z.object({
+      slots: z.number(),
+      /** Urgent slots in effect on the host now. */
+      headroom: z.number(),
+      running: z.number().nullable(),
+      waiting: z.number().nullable(),
+      /** ISO time urgent work first began waiting, or null when none waits. */
+      waitingSince: z.string().nullable(),
+      /** Urgent work has waited at least reportMinutes. */
+      starved: z.boolean(),
+      reportMinutes: z.number(),
+      /** The lane is on but the urgent threads could not be read at the last tick; it kept its last state. */
+      unreadable: z.boolean(),
+    }),
   }),
   threads: z.object({
     /** Threads occupying a slot now: starting or active, hidden included (bb.sdk.threads.listRunning). Not capped. */
