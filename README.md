@@ -52,7 +52,8 @@ Set these with `bb plugin config concurrency-coach`.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Adjust the limit automatically. When false, the 5-minute job does nothing. |
-| `host` | blank | Host name to govern. Blank means the only connected host. Errors if more than one is connected. |
+| `host` | blank | Host name to govern. Blank means the only connected host; with more than one connected, Coach manages every host (see [Every connected host](#every-connected-host)). A name keeps Coach on that one host, exactly as before. |
+| `hostLimits` | blank | Per-host ranges when every host is managed, for example `macstudio:2-12,macmini:1-6`. A host not listed uses `minLimit` and `maxLimit`. A bad entry is dropped. |
 | `minLimit` | `2` | Lowest limit Concurrency Coach will set. |
 | `maxLimit` | `8` | Highest limit Concurrency Coach will set. |
 | `overrideBackoffMinutes` | `120` | After a manual limit change, stop writing for this many minutes. `0` resumes on the next tick. |
@@ -107,12 +108,28 @@ opencode threads (providerId `acp-opencode`) are not limited by Claude quota pac
 - The count comes from `bb agent-tv status --all-projects --json`: `acp-opencode` rows that are busy or queued (status `pending` or `queued`). A queued run counts too, so it earns its slot before it starts. Idle rows do not count. If the feed cannot be read, the headroom in effect is kept.
 - The headroom is written on the next scheduled tick (up to 5 minutes), not the moment a run starts. A run that starts between ticks waits for that tick to get its slot.
 
+## Every connected host
+
+With the `host` setting **blank** and more than one host connected, Coach manages every connected host. This is the case it used to refuse (`set the host setting: 2 hosts are connected`). With `host` set to a name, or with one connected host, nothing changes: Coach governs that host with the same readings, rules and stored state as before.
+
+- **Own readings.** A small host entry (`host.ts`) runs on each enrolled machine and answers with that machine's own load per core and memory (free, swap, paging). Each host steps on its own CPU and memory rules. If a host cannot be read it is held for that tick, with the reason shown, and is never stepped on a guess; the other hosts carry on.
+- **Own range.** `hostLimits` gives each host its own minimum and maximum (a 24-core Studio and a 10-core mini do not want the same ceiling). Hosts not listed use `minLimit` and `maxLimit`.
+- **Own state.** Each host has its own back-off after a manual change, kept apart from the other hosts and from the single-host state, so turning fleet mode on or off does not mix them. The decision log names the host on every line.
+- **The quota is one pool.** The Claude plan quota is shared, so a pace step down (5-hour or weekly use ahead of time elapsed) is taken by **one host per round**: the one furthest above its own minimum steps, and the others hold with `hold: quota step taken on <host> this tick`. They still apply their own memory and CPU rules, and they do not raise while the quota says the account is ahead. Quota near its cap drops every host to its own minimum. Raising on idle CPU is per host.
+- **Not in fleet mode:** Turbo (it holds one host's limit, so its buttons are disabled with the reason; set `host` to use it) and the opencode and urgent lanes (they are off, so each host's limit is Claude's alone).
+- **Panel and CLI.** The page shows each host's limit, range, CPU and memory and its last reason; the footer window shows a row per host. `bb concurrency-coach status` and `tick` print a block per host.
+- **Rounds run one at a time.** The scheduled round, `tick` and `status` queue behind each other, so two never run together and the quota step cannot be taken twice. A round that never settles would hold the ones behind it; each host call has a timeout (30 s for the readings), which bounds that.
+- **A Turbo left from single-host mode is ended** at the start of the first applied fleet round (`status` changes nothing) (nothing ticks the single-host state any more), which also restores any overall cap it raised; the log says `fleet mode started`.
+- **A bad `hostLimits` entry is logged once** (`hostLimits: ignored 1 bad entry ("bogus")`) and the good entries still apply.
+- **Turning it on:** `bb plugin config concurrency-coach unset host`. To go back: `bb plugin config concurrency-coach set host <name>`. The host entry must be installed on each machine (a plugin reload does it), and a host that has not loaded it is reported as not stepped.
+- **Rollback:** revert the merge and refresh the install. Fleet state is under separate keys; single-host state is untouched.
+
 ## Urgent lane
 
 Threads whose task has priority **urgent** (and is todo, in progress or in review) get slots reserved above Claude's paced limit, so a pace hold does not starve a release blocker. It works like the opencode headroom: the host limit is Claude's paced limit, plus the opencode headroom, plus one slot per urgent thread that is running or waiting, up to `urgentSlots`.
 
 - `urgentSlots` (default 1, 0 to 5): slots reserved for urgent threads. **It is on by default**, so the lane is live as soon as this is installed. 0 turns it off, and then no task or feed is read for it.
-- **How wide "urgent" is:** every task in every tracker project with priority urgent that is todo, in progress or in review, and any thread attached to one. On 2026-10-28 that was 24 tasks, most with attached threads, so the lane opens whenever any of those threads runs or waits. If that is too wide, lower the priority of tasks that are not blockers, or set `urgentSlots` to 0.
+- **How wide "urgent" is:** every task in every tracker project with priority urgent that is todo, in progress or in review, and any thread attached to one. On 2026-10-27 that was 24 tasks, most with attached threads, so the lane opens whenever any of those threads runs or waits. If that is too wide, lower the priority of tasks that are not blockers, or set `urgentSlots` to 0.
 - `urgentReportMinutes` (default 120, 0 to 1440): how long urgent work may wait behind the limit before it is flagged. The flag shows in the reason (`urgent work has waited 2 h 0 min`), in the panel and footer window, and the decision log carries `urgentRunning`, `urgentWaiting` and `urgentHeadroom`. Coach does not message anyone; something that reads the log or `status` can.
 - The urgent threads come from the tasks tracker (`bb tasks list --priority urgent`, then each task's attached threads) matched against the agent feed. The tracker is read without the calling thread's project scope, so every project is seen (with the scope, the list fails with `project_ambiguous` when a project links several trackers, or silently covers one project). `--active` is not used: it keeps only threads that are starting or working, and a waiting thread is neither.
 - The task-to-thread map is kept for 10 minutes (a full scan is about 5 s), so a thread newly attached to an urgent task is picked up within that time. With no running or waiting thread nothing is looked up.

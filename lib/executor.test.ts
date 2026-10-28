@@ -29,6 +29,8 @@ interface World {
   opencode: number | null;
   /** Urgent threads the fake feed reports, or null for an unreadable one. */
   urgent: UrgentCount | null;
+  /** The host's name, for tests that run several hosts. */
+  name: string;
 }
 
 function world(over: Partial<World> = {}): World {
@@ -37,6 +39,7 @@ function world(over: Partial<World> = {}): World {
     globalLimit: 8,
     opencode: 0,
     urgent: { running: 0, waiting: 0 },
+    name: "macmini",
     writes: [],
     restores: 0,
     now: T0,
@@ -55,7 +58,7 @@ function cfg(w: World): LimitCfg {
   return {
     globalLimit: w.globalLimit,
     hostOverrides: [{ hostId: "h1", limit: w.limit }],
-    hosts: [{ id: "h1", name: "macmini", status: "connected", effectiveLimit: w.limit }],
+    hosts: [{ id: "h1", name: w.name, status: "connected", effectiveLimit: w.limit }],
   };
 }
 
@@ -758,4 +761,135 @@ test("urgent: with the lane off nothing is unreadable", async () => {
   const t = await e.tick(true);
   assert.equal(t.urgentUnreadable, false);
   assert.equal("urgentUnreadable" in (w.logs[0] as object), false);
+});
+
+// --- Several hosts: one pace step per round for the account's quota, each host on its own readings.
+const WEEK_MS = 7 * 24 * 3600_000;
+/** Weekly use of `used` percent with `elapsed` percent of the week gone, as the provider-usage output the parser reads. */
+const weekAt = (w: World, used: number, elapsed: number) => ({ machines: [{ providers: [{ providerId: "claude-code", usage: { windows: [{ label: "Weekly limit", usedPercent: used, resetsAt: new Date(w.now + ((100 - elapsed) / 100) * WEEK_MS).toISOString() }] } }] }] });
+
+function fleetPair(over: { a?: Partial<World>; b?: Partial<World> } = {}) {
+  const a = world({ name: "macmini", limit: 4, ...over.a });
+  const b = world({ name: "macstudio", limit: 4, ...over.b });
+  a.load1 = over.a?.load1 ?? 4; b.load1 = over.b?.load1 ?? 4; // CPU in the middle band unless a test says otherwise
+  for (const w of [a, b]) w.store.set("override", { lastSet: w.limit, pausedUntil: 0 });
+  const turn = { takenBy: null as string | null };
+  const da = deps(a); da.quotaTurn = turn; da.usage = async () => weekAt(a, 60, 44);
+  const db = deps(b); db.quotaTurn = turn; db.usage = async () => weekAt(b, 60, 44);
+  return { a, b, da, db, turn };
+}
+
+test("fleet: two hosts on the same pace signal: the first steps down, the second holds and says why", async () => {
+  const { a, b, da, db, turn } = fleetPair();
+  const ea = await createExecutor(da);
+  const eb = await createExecutor(db);
+  await ea.tick(true);
+  const t = await eb.tick(true);
+  assert.deepEqual(a.writes, [3]);
+  assert.deepEqual(b.writes, [], "the second host does not step on the same quota");
+  assert.equal(turn.takenBy, "macmini");
+  assert.match(t.why, /^hold: quota step taken on macmini this tick \(weekly use ahead of time elapsed/);
+});
+
+test("fleet: the next round starts fresh, so the other host can take the step", async () => {
+  const { a, b, da, db, turn } = fleetPair();
+  const ea = await createExecutor(da);
+  const eb = await createExecutor(db);
+  await ea.tick(true);
+  await eb.tick(true);
+  turn.takenBy = null; // a new round
+  a.now += 5 * MIN; b.now += 5 * MIN;
+  await eb.tick(true);
+  assert.deepEqual(b.writes, [3]);
+});
+
+test("fleet: a host's own CPU-hot step still happens when the quota step went elsewhere", async () => {
+  const { a, b, da, db } = fleetPair({ b: { load1: 9 } });
+  const ea = await createExecutor(da);
+  const eb = await createExecutor(db);
+  await ea.tick(true);
+  await eb.tick(true);
+  assert.deepEqual(a.writes, [3]);
+  assert.deepEqual(b.writes, [3], "b is hot on its own load: it steps for that, not for the quota step a took");
+  assert.match((b.logs[0] as { why: string }).why, /^CPU hot/);
+});
+
+test("fleet: quota near its cap drops every host to its minimum, whatever the quota step", async () => {
+  const { a, b, da, db, turn } = fleetPair();
+  da.usage = async () => weekAt(a, 92, 80);
+  db.usage = async () => weekAt(b, 92, 80);
+  turn.takenBy = "macmini";
+  const eb = await createExecutor(db);
+  await eb.tick(true);
+  assert.deepEqual(b.writes, [1]);
+});
+
+test("fleet: a host in its back-off does not take the quota step, so the next host does", async () => {
+  const { a, b, da, db, turn } = fleetPair();
+  a.store.set("override", { lastSet: 4, pausedUntil: a.now + 60 * MIN }); // a is backing off a manual change
+  const ea = await createExecutor(da);
+  const eb = await createExecutor(db);
+  await ea.tick(true);
+  assert.equal(turn.takenBy, null);
+  await eb.tick(true);
+  assert.deepEqual(a.writes, []);
+  assert.deepEqual(b.writes, [3]);
+  assert.equal(turn.takenBy, "macstudio");
+});
+
+test("fleet: a status tick does not take the quota step", async () => {
+  const { a, da, turn } = fleetPair();
+  const ea = await createExecutor(da);
+  await ea.tick(false);
+  assert.equal(turn.takenBy, null);
+  assert.deepEqual(a.writes, []);
+});
+
+test("single host: with no quotaTurn the pace step is taken as before", async () => {
+  const w = world({ limit: 4 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  w.load1 = 4;
+  const d = deps(w);
+  d.usage = async () => weekAt(w, 60, 44);
+  await (await createExecutor(d)).tick(true);
+  assert.deepEqual(w.writes, [3]);
+});
+
+test("a load reading may be asynchronous", async () => {
+  const w = world({ limit: 4 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const d = deps(w);
+  d.load = async () => { await new Promise((r) => setTimeout(r, 5)); return { load1: 0.2 * 24, cpus: 24 }; };
+  await (await createExecutor(d)).tick(true);
+  assert.deepEqual(w.writes, [5], "idle on a 24-core host: 0.2 per core");
+});
+
+test("a load reading that fails stops that host's tick and writes nothing", async () => {
+  const w = world({ limit: 4 });
+  w.store.set("override", { lastSet: 4, pausedUntil: 0 });
+  const d = deps(w);
+  d.load = async () => { throw new Error("host unreachable"); };
+  const e = await createExecutor(d);
+  await assert.rejects(e.tick(true), /host unreachable/);
+  assert.deepEqual(w.writes, []);
+  assert.equal(w.logs.length, 0);
+});
+
+test("a single-host Turbo that raised the cap ends with the cap restored even when several hosts are connected (fleet mode handover)", async () => {
+  const w = world({ limit: 6, globalLimit: 6 });
+  const t0 = w.now;
+  w.store.set("turbo", { startedAt: t0 - 10 * MIN, until: t0 + 60 * MIN, untilOff: false, limit: 6, by: "cli", hostId: "h1", globalBefore: 4, globalRaised: true });
+  w.store.set("override", { lastSet: 6, pausedUntil: 0 });
+  const d = deps(w);
+  // Fleet mode: the host setting is blank, so the single-host path would refuse to pick a host.
+  d.settings = async () => ({ ...w.settings, host: "" });
+  const e = await createExecutor(d);
+  assert.notEqual(e.state().turbo, null);
+  assert.equal(await e.endTurbo("scheduler", "fleet mode started: Turbo is single-host"), true);
+  assert.equal(e.state().turbo, null);
+  assert.equal(w.store.has("turbo"), false);
+  assert.equal(w.restores, 1, "the overall cap raise is restored");
+  assert.equal(w.globalLimit, 4);
+  assert.ok(w.logs.some((l) => "kind" in l && l.kind === "turbo" && l.action === "end" && /fleet mode started/.test(l.reason ?? "") && /overall cap restored to 4/.test(l.reason ?? "")));
+  assert.equal(await e.endTurbo("scheduler", "again"), false, "a second call is a no-op");
 });

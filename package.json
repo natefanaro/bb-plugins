@@ -19,7 +19,8 @@
     "app": "./app.tsx",
     "skills": [
       "skills"
-    ]
+    ],
+    "host": "./host.ts"
   },
   "scripts": {
     "test": "node --test --experimental-strip-types lib/*.test.ts"

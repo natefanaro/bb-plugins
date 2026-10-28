@@ -18,8 +18,12 @@ export interface Signals {
   memory?: { reading: MemoryReading; thresholds: MemoryThresholds };
   /** The tunables. Undefined = the shipped defaults, so existing callers and tests are unchanged. */
   tuning?: Tuning;
+  /** The name of the host that already took this round's quota-pace step down. The quota is one pool for the account, so this host holds instead of stepping on the same signal. Undefined (single host) changes nothing. */
+  quotaStepTaken?: string;
 }
-export interface Decision { next: number; why: string }
+/** Which rule produced a decision. The quota pace rules are the ones a fleet takes one host at a time. */
+export type DecisionKind = "quota-cap" | "memory" | "quota-5h" | "quota-week" | "cpu-hot" | "hold-week" | "raise" | "hold";
+export interface Decision { next: number; why: string; kind: DecisionKind }
 
 // The shipped defaults, kept under their old names for callers that read them directly. The policy reads the tuning from the signals.
 export const HOT = DEFAULT_TUNING.hotLoad;
@@ -40,29 +44,40 @@ export function weekProjected(used: number, elapsed: number): number | null {
 export function decide(s: Signals): Decision {
   const clamp = (n: number) => Math.max(s.min, Math.min(s.max, n));
   const t = s.tuning ?? DEFAULT_TUNING;
+  // A pace step down is one step on the account's quota. With several hosts, the host that takes it first is the one that steps. The others skip that step (their own memory and CPU rules still apply) and do not raise.
+  let paceSkipped: string | null = null;
   if ((s.weekUsed ?? 0) >= t.quotaWeekNear || (s.fiveHourUsed ?? 0) >= t.quotaFiveHourNear)
-    return { next: s.min, why: `quota near limit (5h ${s.fiveHourUsed ?? "?"}%, week ${s.weekUsed ?? "?"}%)` };
+    return { next: s.min, why: `quota near limit (5h ${s.fiveHourUsed ?? "?"}%, week ${s.weekUsed ?? "?"}%)`, kind: "quota-cap" };
   // Memory pressure comes before CPU: a thrashing host is slow whatever its load. This also blocks raising the limit.
   if (s.memory && memoryHot(s.memory.reading, { ...s.memory.thresholds, pageoutHotPerSec: t.pageoutHotPerSec }))
-    return { next: clamp(s.cur - 1), why: `memory pressure (${memorySentence(s.memory.reading)})` };
+    return { next: clamp(s.cur - 1), why: `memory pressure (${memorySentence(s.memory.reading)})`, kind: "memory" };
   if (s.fiveHourUsed !== null && s.fiveHourElapsed !== null && s.fiveHourUsed > s.fiveHourElapsed + t.slackFiveHour)
-    return { next: clamp(s.cur - 1), why: `5-hour use ahead of time elapsed (${s.fiveHourUsed}% used, ${s.fiveHourElapsed}% elapsed)` };
+  {
+    const why = `5-hour use ahead of time elapsed (${s.fiveHourUsed}% used, ${s.fiveHourElapsed}% elapsed)`;
+    if (s.quotaStepTaken === undefined) return { next: clamp(s.cur - 1), why, kind: "quota-5h" };
+    paceSkipped = why;
+  }
   // Weekly rules only run once the week has elapsed past the floor. Unknown weekly figures are no signal.
   const week = s.weekUsed !== null && s.weekElapsed !== null && s.weekElapsed >= WEEK_MIN_ELAPSED ? { used: s.weekUsed, elapsed: s.weekElapsed } : null;
   const projected = week ? weekProjected(week.used, week.elapsed) : null;
   const weekDetail = week && projected !== null ? `${week.used}% used, ${week.elapsed}% elapsed, projected ${Math.round(projected)}% by reset` : "";
-  if (week && week.used > week.elapsed + t.slackWeek)
-    return { next: clamp(s.cur - 1), why: `weekly use ahead of time elapsed (${weekDetail})` };
-  if (s.loadRatio > t.hotLoad) return { next: clamp(s.cur - 1), why: `CPU hot (load/cpu ${s.loadRatio.toFixed(2)})` };
+  if (week && week.used > week.elapsed + t.slackWeek) {
+    const why = `weekly use ahead of time elapsed (${weekDetail})`;
+    if (s.quotaStepTaken === undefined) return { next: clamp(s.cur - 1), why, kind: "quota-week" };
+    paceSkipped ??= why;
+  }
+  if (s.loadRatio > t.hotLoad) return { next: clamp(s.cur - 1), why: `CPU hot (load/cpu ${s.loadRatio.toFixed(2)})`, kind: "cpu-hot" };
+  // The pace step went to another host: this host holds, and does not raise while the quota says the account is ahead.
+  if (paceSkipped !== null) return { next: clamp(s.cur), why: `hold: quota step taken on ${s.quotaStepTaken} this tick (${paceSkipped})`, kind: "hold" };
   if (s.loadRatio < t.idleLoad) {
     // Raising waits until weekly use is back within the raise slack of elapsed. The reason gives the sustainable limit at the current burn: cur * 100 / projected.
     if (week && week.used > week.elapsed + t.raiseSlackWeek) {
       const sustainable = projected !== null && projected > 100 ? Math.max(s.min, Math.floor((s.cur * 100) / projected)) : s.cur;
-      return { next: clamp(s.cur), why: `hold: no raise while weekly use is more than ${t.raiseSlackWeek} points ahead of time elapsed (${weekDetail}); sustainable limit ${sustainable}` };
+      return { next: clamp(s.cur), why: `hold: no raise while weekly use is more than ${t.raiseSlackWeek} points ahead of time elapsed (${weekDetail}); sustainable limit ${sustainable}`, kind: "hold-week" };
     }
-    return { next: clamp(s.cur + 1), why: `CPU idle (load/cpu ${s.loadRatio.toFixed(2)})` };
+    return { next: clamp(s.cur + 1), why: `CPU idle (load/cpu ${s.loadRatio.toFixed(2)})`, kind: "raise" };
   }
-  return { next: clamp(s.cur), why: "hold" };
+  return { next: clamp(s.cur), why: "hold", kind: "hold" };
 }
 
 interface Window { label?: string; usedPercent?: number; resetsAt?: string }
