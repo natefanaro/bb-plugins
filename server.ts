@@ -18,6 +18,7 @@ import {
 import { coachRpcContract, type PanelView, type TurboView } from "./lib/contract.ts";
 import { parseTurboChoices, type TurboChoice } from "./lib/turbo-choices.ts";
 import { turboCli } from "./lib/turbo-cli.ts";
+import { explainLimit } from "./lib/explain.ts";
 
 const execFileP = promisify(execFile);
 
@@ -143,6 +144,12 @@ export default async function plugin(bb: BbPluginApi) {
       const { stdout } = await execFileP("ps", ["-Ao", "pcpu,comm", "-r"], { timeout: 3000, maxBuffer: 8 * 1024 * 1024 });
       topCpu = topCpuName(stdout);
     } catch { /* process list unavailable */ }
+    // What limits the limit now: the same signals the scheduler reads, against Claude's own limit (the host limit without the opencode headroom).
+    const claudeNow = current === null ? min : current - exec.state().headroom;
+    const explain = explainLimit(
+      { cur: claudeNow, min, max, loadRatio, ...usage, memory: { reading: memory, thresholds: { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec } }, tuning },
+      turboNow.active,
+    );
     const backingOff = override.pausedUntil > now;
     const activeTurbo = turboNow.active && turbo !== null ? turbo : null;
     return {
@@ -171,6 +178,7 @@ export default async function plugin(bb: BbPluginApi) {
         decidedAt: last?.decidedAt ?? null,
         backingOff,
         backOffMinutesLeft: backingOff ? Math.ceil((override.pausedUntil - now) / 60_000) : 0,
+        explain,
         detail: last === null ? null : {
           applied: last.record.applied,
           cur: last.record.cur,

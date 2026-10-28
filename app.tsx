@@ -220,8 +220,9 @@ function ConcurrencyCoachPage() {
 
       <TurboControl view={view} onChanged={refresh} />
 
-      <Section title="Last decision">
-        <div className="text-sm">{why.sentence}</div>
+      <Section title="What limits it">
+        <div className="text-sm">{why.explain.line}</div>
+        <div className="text-xs text-muted-foreground">Last decision: {why.sentence}</div>
         <div className="text-xs text-muted-foreground">
           {why.decidedAt === null
             ? "Nothing logged yet"
@@ -252,8 +253,15 @@ function ConcurrencyCoachPage() {
           {inputs.memory.freePct !== null && (
             <Bar value={inputs.memory.freePct} max={100} ticks={[inputs.memory.memFreeMinPercent]} tone={inputs.memory.hot ? "bg-destructive" : "bg-primary"} />
           )}
+          <div className="flex justify-between text-sm">
+            <span>Swap used</span>
+            <span className="text-muted-foreground">{inputs.memory.swapUsedPct === null ? "?" : `${inputs.memory.swapUsedPct}%`}</span>
+          </div>
+          {inputs.memory.swapUsedPct !== null && (
+            <Bar value={inputs.memory.swapUsedPct} max={100} ticks={[inputs.memory.swapHotPercent]} tone={inputs.memory.hot ? "bg-destructive" : "bg-primary"} />
+          )}
           <div className="text-xs text-muted-foreground">
-            Pressure when free memory is under {inputs.memory.memFreeMinPercent}%, or swap is at {inputs.memory.swapHotPercent}% or more while paging out. It lowers the limit one step per tick and blocks raising it.
+            Capacity (memory) holds the limit when free memory is under {inputs.memory.memFreeMinPercent}%, or swap is at {inputs.memory.swapHotPercent}% or more while paging out. Swap alone is not pressure. Quota (pace) holds it when use runs ahead of time elapsed.
           </div>
         </div>
         <Quota label="5-hour window" used={inputs.fiveHour.used} elapsed={inputs.fiveHour.elapsed} projected={inputs.fiveHour.projected} state={inputs.fiveHour.state} />
@@ -375,12 +383,12 @@ function CoachWindow() {
           text={load.ratio === null ? "?" : load.ratio.toFixed(2)}
           hint={`CPU load per core. Ticks at ${load.idle} (idle) and ${load.hot} (hot).`}
         />
-        <GaugeRow label="Memory" value={memory.freePct} max={100} ticks={[memory.memFreeMinPercent]} tone={memory.hot ? "bg-destructive" : "bg-primary"} text={pct(memory.freePct)} hint={`Free memory. The tick is the ${memory.memFreeMinPercent}% pressure line.`} />
+        <GaugeRow label="Memory" value={memory.freePct} max={100} ticks={[memory.memFreeMinPercent]} tone={memory.hot ? "bg-destructive" : "bg-primary"} text={pct(memory.freePct)} hint={`Free memory. The tick is the ${memory.memFreeMinPercent}% pressure line. Swap ${memory.swapUsedPct ?? "?"}%.`} />
       </div>
 
       <div className="flex flex-col gap-0.5 border-t pt-2">
-        <div className="truncate text-sm" title={view.why.sentence}>
-          {view.why.sentence}
+        <div className="truncate text-sm" title={`${view.why.explain.line} Last decision: ${view.why.sentence}`}>
+          {view.why.explain.line}
         </div>
         <div className="text-xs text-muted-foreground">
           {d !== null && `${d.applied ? "Applied" : "Held"} ${d.cur} → ${d.next} · `}
