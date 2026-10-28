@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { explainLimit, limitFlags } from "./explain.ts";
 import { decide, type Signals } from "./policy.ts";
-import { DEFAULT_TUNING } from "./tuning.ts";
+import { NO_RESERVE } from "./test-tuning.ts";
 
 const TH = { swapHotPercent: 70, memFreeMinPercent: 15 };
-const base: Signals = { cur: 4, min: 1, max: 8, loadRatio: 0.3, fiveHourUsed: 10, fiveHourElapsed: 20, weekUsed: 40, weekElapsed: 42, memory: { reading: { swapUsedPct: 40, freePct: 70, pageoutsPerSec: 0 }, thresholds: TH } };
+const base: Signals = { tuning: NO_RESERVE, cur: 4, min: 1, max: 8, loadRatio: 0.3, fiveHourUsed: 10, fiveHourElapsed: 20, weekUsed: 40, weekElapsed: 42, memory: { reading: { swapUsedPct: 40, freePct: 70, pageoutsPerSec: 0 }, thresholds: TH } };
 const mem = (over: Partial<NonNullable<Signals["memory"]>["reading"]>): Signals => ({ ...base, memory: { reading: { ...base.memory!.reading, ...over }, thresholds: TH } });
 
 test("capacity (memory): free memory under its floor, quota fine", () => {
@@ -65,7 +65,7 @@ test("Turbo on: the line says the pace rules are paused", () => {
 });
 
 test("the tunables move the thresholds", () => {
-  const s: Signals = { ...base, weekUsed: 53, weekElapsed: 44, tuning: { ...DEFAULT_TUNING, slackWeek: 20, raiseSlackWeek: 20 } };
+  const s: Signals = { ...base, weekUsed: 53, weekElapsed: 44, tuning: { ...NO_RESERVE, slackWeek: 20, raiseSlackWeek: 20 } };
   assert.equal(explainLimit(s, false).cause, "none", "9 points ahead is within a 20 point slack");
 });
 
@@ -84,6 +84,7 @@ test("agrees with decide() across a grid of readings", () => {
     const e = explainLimit(s, false);
     const f = limitFlags(s);
     if (why.startsWith("quota near limit")) assert.equal(e.cause, "quota-cap", why);
+    else if (why.startsWith("Nate's reserve")) assert.equal(e.cause, "reserve", why);
     else if (why.startsWith("memory pressure")) assert.ok(e.cause === "memory" || e.cause === "memory-and-quota", why);
     else if (why.startsWith("5-hour use ahead") || why.startsWith("weekly use ahead") || why.startsWith("hold: no raise")) assert.equal(e.cause, "quota", why);
     else if (why.startsWith("CPU hot")) assert.equal(e.cause, "cpu", why);
@@ -99,4 +100,22 @@ test("a weekly raise hold is a quota hold only when CPU is idle (a raise was wan
   const ahead4 = { ...base, weekUsed: 46, weekElapsed: 42 };
   assert.equal(explainLimit({ ...ahead4, loadRatio: 0.2 }, false).cause, "quota");
   assert.equal(explainLimit({ ...ahead4, loadRatio: 0.7 }, false).cause, "none");
+});
+
+test("Nate's reserve is named, with the minimum and the urgent lane", () => {
+  const e = explainLimit({ ...base, tuning: { ...NO_RESERVE, reserveFiveHour: 60 }, fiveHourUsed: 70, fiveHourElapsed: 50 }, false);
+  assert.equal(e.cause, "reserve");
+  assert.match(e.line, /^At the minimum, 1: Nate's reserve: 5 h window 70% used, agents' share is 60%\. Only the urgent lane runs above it\.$/);
+});
+test("the explanation and the policy agree on the reserve over a grid", () => {
+  for (const fiveHourUsed of [10, 59, 60, 80]) for (const [weekUsed, weekElapsed] of [[20, 40], [30, 40], [31, 40], [60, 80]] as const) {
+    const s: Signals = { ...base, tuning: { ...NO_RESERVE, reserveFiveHour: 60, reserveWeek: 1 }, fiveHourUsed, fiveHourElapsed: 50, weekUsed, weekElapsed };
+    assert.equal(decide(s).kind === "reserve", explainLimit(s, false).cause === "reserve", JSON.stringify([fiveHourUsed, weekUsed, weekElapsed]));
+  }
+});
+test("Nate's reserve in fleet mode: says every host is at its minimum and the lanes are off", () => {
+  const e = explainLimit({ ...base, tuning: { ...NO_RESERVE, reserveFiveHour: 60 }, fiveHourUsed: 70, fiveHourElapsed: 50 }, false, true);
+  assert.equal(e.cause, "reserve");
+  assert.match(e.line, /Fleet mode: every host is at its minimum, and the urgent and opencode lanes are off\.$/);
+  assert.doesNotMatch(e.line, /Only the urgent lane/);
 });

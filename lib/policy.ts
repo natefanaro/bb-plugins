@@ -22,7 +22,7 @@ export interface Signals {
   quotaStepTaken?: string;
 }
 /** Which rule produced a decision. The quota pace rules are the ones a fleet takes one host at a time. */
-export type DecisionKind = "quota-cap" | "memory" | "quota-5h" | "quota-week" | "cpu-hot" | "hold-week" | "raise" | "hold";
+export type DecisionKind = "quota-cap" | "reserve" | "memory" | "quota-5h" | "quota-week" | "cpu-hot" | "hold-week" | "raise" | "hold";
 export interface Decision { next: number; why: string; kind: DecisionKind }
 
 // The shipped defaults, kept under their old names for callers that read them directly. The policy reads the tuning from the signals.
@@ -41,6 +41,23 @@ export function weekProjected(used: number, elapsed: number): number | null {
   return (used / elapsed) * 100;
 }
 
+/** The weekly reserve line never falls below this percent used, so the first days of a week do not freeze the limit at 0% use. */
+export const RESERVE_WEEK_FLOOR = 10;
+
+/**
+ * Nate's reserve: the share of the quota agents may use. Above the 5-hour share, or when weekly use is within the margin of (or past) the week's pace line, the limit holds at the minimum.
+ * Null when the reserve is not reached (or its figures are unknown). The week has no signal in its first hours, as in the pace rules.
+ */
+export function reserveReason(s: Pick<Signals, "fiveHourUsed" | "weekUsed" | "weekElapsed">, t: Tuning): string | null {
+  if (t.reserveFiveHour > 0 && s.fiveHourUsed !== null && s.fiveHourUsed >= t.reserveFiveHour)
+    return `Nate's reserve: 5 h window ${s.fiveHourUsed}% used, agents' share is ${t.reserveFiveHour}%`;
+  if (t.reserveWeek === 1 && s.weekUsed !== null && s.weekElapsed !== null && s.weekElapsed >= WEEK_MIN_ELAPSED) {
+    const line = Math.max(RESERVE_WEEK_FLOOR, s.weekElapsed - t.reserveWeekMargin);
+    if (s.weekUsed >= line) return `Nate's reserve: week ${s.weekUsed}% used, agents' share ends at ${line}% (pace ${s.weekElapsed}% minus ${t.reserveWeekMargin} points, at least ${RESERVE_WEEK_FLOOR}%)`;
+  }
+  return null;
+}
+
 export function decide(s: Signals): Decision {
   const clamp = (n: number) => Math.max(s.min, Math.min(s.max, n));
   const t = s.tuning ?? DEFAULT_TUNING;
@@ -48,6 +65,8 @@ export function decide(s: Signals): Decision {
   let paceSkipped: string | null = null;
   if ((s.weekUsed ?? 0) >= t.quotaWeekNear || (s.fiveHourUsed ?? 0) >= t.quotaFiveHourNear)
     return { next: s.min, why: `quota near limit (5h ${s.fiveHourUsed ?? "?"}%, week ${s.weekUsed ?? "?"}%)`, kind: "quota-cap" };
+  const reserve = reserveReason(s, t);
+  if (reserve !== null) return { next: s.min, why: reserve, kind: "reserve" };
   // Memory pressure comes before CPU: a thrashing host is slow whatever its load. This also blocks raising the limit.
   if (s.memory && memoryHot(s.memory.reading, { ...s.memory.thresholds, pageoutHotPerSec: t.pageoutHotPerSec }))
     return { next: clamp(s.cur - 1), why: `memory pressure (${memorySentence(s.memory.reading)})`, kind: "memory" };

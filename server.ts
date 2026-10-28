@@ -54,6 +54,9 @@ export default async function plugin(bb: BbPluginApi) {
     turboSwapEndPercent: { type: "number", label: "Extra: swap used (percent) at which Turbo ends, on top of memory pressure (0 = off; otherwise 50 to 100)", default: 0 },
     // The urgent lane: threads whose task has priority urgent get reserved slots above the paced limit.
     urgentSlots: { type: "number", label: "Slots reserved above the paced limit for urgent threads (0 turns the lane off; up to 5)", default: 1 },
+    reserveFiveHour: { type: "number", label: "Nate's reserve: agents may use at most this percent of the 5-hour window; above it the limit holds at the minimum (0 turns it off)", default: 60 },
+    reserveWeek: { type: "number", label: "Nate's reserve on the week: 1 on, 0 off", default: 1 },
+    reserveWeekMargin: { type: "number", label: "Nate's reserve: points below the week's pace that agents' weekly use may reach (pace is the percent of the week elapsed)", default: 10 },
     urgentReportMinutes: { type: "number", label: "Minutes urgent work may wait before the panel and log flag it (0 = never)", default: 120 },
     // Several hosts: each host's own range. Used when the host setting is blank and more than one host is connected.
     hostLimits: { type: "string", label: "Per-host limit ranges when every connected host is managed, such as macstudio:2-12,macmini:1-6 (hosts not listed use the minimum and maximum above)", default: "" },
@@ -196,9 +199,10 @@ export default async function plugin(bb: BbPluginApi) {
     const explainSingle = explainLimit(
       { cur: claudeNow, min, max, loadRatio, ...usage, memory: { reading: memory, thresholds: { swapHotPercent: s.swapHotPercent, memFreeMinPercent: s.memFreeMinPercent, pageoutHotPerSec: tuning.pageoutHotPerSec } }, tuning },
       turboNow.active,
+      fleetOn,
     );
     const hostCount = panelCfg === null ? 0 : panelCfg.hosts.filter((h) => h.status === "connected").length;
-    const explain = fleetOn ? { cause: "none" as const, line: `Managing ${hostCount} hosts, each on its own load and memory; one host takes the quota pace step each round.` } : explainSingle;
+    const explain = fleetOn && explainSingle.cause !== "reserve" ? { cause: "none" as const, line: `Managing ${hostCount} hosts, each on its own load and memory; one host takes the quota pace step each round.` } : explainSingle;
     // Every connected host with its range and its last tick, when all are managed.
     let fleetView: PanelView["fleet"] = null;
     if (fleetOn && panelCfg !== null) {

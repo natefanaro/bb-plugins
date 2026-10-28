@@ -25,6 +25,12 @@ export interface Tuning {
   urgentSlots: number;
   /** Minutes urgent work may wait before it is flagged as starved. 0 never flags. */
   urgentReportMinutes: number;
+  /** Nate's reserve: the most of the 5-hour window (percent used) agents may use. At or above it the limit holds at the minimum. 0 turns the 5-hour reserve off. */
+  reserveFiveHour: number;
+  /** Nate's reserve on the week: 1 on, 0 off. */
+  reserveWeek: number;
+  /** Points below the week's pace (percent of the week elapsed) that agents' weekly use may reach before the reserve holds the limit at the minimum. */
+  reserveWeekMargin: number;
 }
 
 export const DEFAULT_TUNING: Tuning = {
@@ -40,6 +46,9 @@ export const DEFAULT_TUNING: Tuning = {
   turboSwapEndPercent: 0,
   urgentSlots: 1,
   urgentReportMinutes: 120,
+  reserveFiveHour: 60,
+  reserveWeek: 1,
+  reserveWeekMargin: 10,
 };
 
 /** Each tunable's range. A value outside it, or not a finite number, falls back to its default. Percent thresholds are 1 to 100 (0 would pin the limit to the minimum), except the Turbo swap end line, which is 0 (off) or 50 to 100; slacks are 0 to 100; loads are above 0; page-outs are 0 or more. */
@@ -56,6 +65,9 @@ const VALID: Record<keyof Tuning, (v: number) => boolean> = {
   turboSwapEndPercent: (v) => v === 0 || (v >= 50 && v <= 100),
   urgentSlots: (v) => Number.isInteger(v) && v >= 0 && v <= 5,
   urgentReportMinutes: (v) => Number.isInteger(v) && v >= 0 && v <= 1440,
+  reserveFiveHour: (v) => v === 0 || (v >= 1 && v <= 100),
+  reserveWeek: (v) => v === 0 || v === 1,
+  reserveWeekMargin: (v) => v >= 0 && v <= 100,
 };
 
 /**
@@ -80,6 +92,9 @@ export function tuningFrom(s: Partial<Record<keyof Tuning, unknown>>): Tuning {
     turboSwapEndPercent: pick("turboSwapEndPercent"),
     urgentSlots: pick("urgentSlots"),
     urgentReportMinutes: pick("urgentReportMinutes"),
+    reserveFiveHour: pick("reserveFiveHour"),
+    reserveWeek: pick("reserveWeek"),
+    reserveWeekMargin: pick("reserveWeekMargin"),
   };
   if (!(t.idleLoad < t.hotLoad)) {
     t.idleLoad = DEFAULT_TUNING.idleLoad;

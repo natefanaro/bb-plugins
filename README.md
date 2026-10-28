@@ -124,6 +124,18 @@ With the `host` setting **blank** and more than one host connected, Coach manage
 - **Turning it on:** `bb plugin config concurrency-coach unset host`. To go back: `bb plugin config concurrency-coach set host <name>`. The host entry must be installed on each machine (a plugin reload does it), and a host that has not loaded it is reported as not stepped.
 - **Rollback:** revert the merge and refresh the install. Fleet state is under separate keys; single-host state is untouched.
 
+## Nate's reserve
+
+Agents may use only a share of the quota; the rest is the person's own. When agents pass their share, the limit holds at the minimum and only the urgent lane runs above it (the quota cap works the same way, but at 90-92%). The panel and the log say "Nate's reserve" as the reason.
+
+- `reserveFiveHour` (default 60, 1 to 100, 0 = off): the most of the 5-hour window, in percent used, that agents may use. At or above it, every host holds at the minimum.
+- `reserveWeek` (default 1, 0 = off) and `reserveWeekMargin` (default 10, 0 to 100): the weekly line is the share of the week elapsed minus the margin. Weekly use at or above that line holds the limit at the minimum. The line never falls below 10% used (`max(10, elapsed - margin)`), so a new week does not freeze at 0% use. The week has no signal in its first 5% (as for the pace rules).
+- **Fleet mode:** the reserve is account-wide, so every host drops to its own minimum. The urgent and opencode lanes are off in fleet mode, so nothing runs above the minimum; the panel line says so.
+- **Rollout:** it is on at merge. With `minLimit` 1 the limit holds at 1 until the week catches up to the line.
+- **It is on by default**, and it is strict: a week at 61% used with 47% elapsed (line 37%) holds at the minimum until the week catches up. Set `reserveWeek` to 0 or lower `reserveWeekMargin` to loosen it.
+- A running Turbo is not ended by the reserve (it ends on the quota cap, memory pressure or its timer, as before). The reserve decides only the paced limit.
+- Not in this plugin: the rule for lead threads not to start non-urgent builders, and the quota line in the daily digest. Coach exposes `5h` and `week` percent in `status` and the log.
+
 ## Urgent lane
 
 Threads whose task has priority **urgent** (and is todo, in progress or in review) get slots reserved above Claude's paced limit, so a pace hold does not starve a release blocker. It works like the opencode headroom: the host limit is Claude's paced limit, plus the opencode headroom, plus one slot per urgent thread that is running or waiting, up to `urgentSlots`.

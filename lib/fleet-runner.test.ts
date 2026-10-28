@@ -35,7 +35,7 @@ function setup(hosts: FHost[], over: { settings?: Record<string, unknown>; quota
   let outstanding = 0;
   let peakOutstanding = 0;
   const cfg = (): LimitCfg => ({ globalLimit: 32, hostOverrides: [], hosts: hosts.map((h) => ({ id: h.id, name: h.name, status: h.connected === false ? "disconnected" : "connected", effectiveLimit: h.limit })) });
-  const settings = { enabled: true, host: "", minLimit: 1, maxLimit: 8, overrideBackoffMinutes: 120, swapHotPercent: 70, memFreeMinPercent: 15, ...over.settings };
+  const settings = { enabled: true, host: "", minLimit: 1, maxLimit: 8, overrideBackoffMinutes: 120, swapHotPercent: 70, memFreeMinPercent: 15, reserveFiveHour: 0, reserveWeek: 0, ...over.settings };
   const quota = over.quota === undefined ? { used: 60, elapsed: 44 } : over.quota;
   const deps: FleetDeps = {
     settings: async () => settings as never,
@@ -117,6 +117,15 @@ test("quota near its cap drops every host to its own minimum", async () => {
   await fleet.round(true);
   assert.deepEqual(by(w.writes, "h_studio"), [3], "the studio's own minimum");
   assert.deepEqual(by(w.writes, "h_mini"), [1], "the default minimum");
+});
+
+test("Nate's reserve in fleet mode: every host drops to its own minimum, with the lanes off", async () => {
+  const w = setup([MINI(), STUDIO()], { quota: { used: 60, elapsed: 44 }, settings: { hostLimits: "macstudio:3-12", reserveWeek: 1, reserveWeekMargin: 10, opencodeSlots: 1, urgentSlots: 1 } });
+  const fleet = await createFleet(w.deps);
+  const results = await fleet.round(true);
+  assert.deepEqual(by(w.writes, "h_studio"), [3], "the studio's own minimum");
+  assert.deepEqual(by(w.writes, "h_mini"), [1], "the default minimum");
+  for (const r of results) { assert.match(r.tick?.why ?? "", /^Nate's reserve: week 60% used/); assert.equal(r.tick?.headroom, 0, "no opencode headroom"); assert.equal(r.tick?.urgentHeadroom, 0, "no urgent headroom"); }
 });
 
 test("each host is held to its own range from hostLimits: both idle and at their own maximum, nothing is written", async () => {
@@ -282,7 +291,7 @@ test("a changed bad hostLimits is logged again, and a good one logs nothing", as
   const w = setup([MINI(), STUDIO()], { quota: null, settings: { hostLimits: "bad" } });
   const fleet = await createFleet(w.deps);
   await fleet.round(true);
-  (w.deps.settings as unknown) = async () => ({ enabled: true, host: "", minLimit: 1, maxLimit: 8, overrideBackoffMinutes: 120, swapHotPercent: 70, memFreeMinPercent: 15, hostLimits: "worse:0-0" });
+  (w.deps.settings as unknown) = async () => ({ enabled: true, host: "", minLimit: 1, maxLimit: 8, overrideBackoffMinutes: 120, swapHotPercent: 70, memFreeMinPercent: 15, reserveFiveHour: 0, reserveWeek: 0, hostLimits: "worse:0-0" });
   w.advance(5 * MIN);
   await fleet.round(true);
   assert.equal(w.warns.filter((m) => m.startsWith("hostLimits:")).length, 2);

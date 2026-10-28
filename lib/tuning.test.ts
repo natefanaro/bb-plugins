@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { DEFAULT_TUNING, tuningFrom } from "./tuning.ts";
 
 test("the defaults are the values the plugin shipped with", () => {
-  assert.deepEqual(DEFAULT_TUNING, { hotLoad: 0.85, idleLoad: 0.5, quotaFiveHourNear: 92, quotaWeekNear: 90, slackFiveHour: 25, slackWeek: 6, raiseSlackWeek: 3, pageoutHotPerSec: 100, opencodeSlots: 1, turboSwapEndPercent: 0, urgentSlots: 1, urgentReportMinutes: 120 });
+  assert.deepEqual(DEFAULT_TUNING, { hotLoad: 0.85, idleLoad: 0.5, quotaFiveHourNear: 92, quotaWeekNear: 90, slackFiveHour: 25, slackWeek: 6, raiseSlackWeek: 3, pageoutHotPerSec: 100, opencodeSlots: 1, turboSwapEndPercent: 0, urgentSlots: 1, urgentReportMinutes: 120, reserveFiveHour: 60, reserveWeek: 1, reserveWeekMargin: 10 });
 });
 test("tuningFrom takes the settings and falls back to the default for a missing or non-numeric value", () => {
   assert.deepEqual(tuningFrom({}), DEFAULT_TUNING);
@@ -78,4 +78,12 @@ test("urgentReportMinutes is a whole number 0 to 1440 (0 never flags); anything 
   assert.equal(tuningFrom({ urgentReportMinutes: 1441 }).urgentReportMinutes, 120);
   assert.equal(tuningFrom({ urgentReportMinutes: 30.5 }).urgentReportMinutes, 120);
   assert.equal(tuningFrom({ urgentReportMinutes: Number.NaN }).urgentReportMinutes, 120);
+});
+
+test("the reserve tunables: 0 turns the 5-hour share off, bad values fall back", () => {
+  assert.equal(tuningFrom({ reserveFiveHour: 0 }).reserveFiveHour, 0);
+  assert.equal(tuningFrom({ reserveFiveHour: 101 }).reserveFiveHour, 60);
+  assert.equal(tuningFrom({ reserveWeek: 2 }).reserveWeek, 1);
+  assert.equal(tuningFrom({ reserveWeek: 0 }).reserveWeek, 0);
+  assert.equal(tuningFrom({ reserveWeekMargin: -1 }).reserveWeekMargin, 10);
 });

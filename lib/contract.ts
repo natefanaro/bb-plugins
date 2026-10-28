@@ -82,7 +82,7 @@ export const panelSchema = z.object({
     backingOff: z.boolean(),
     backOffMinutesLeft: z.number(),
     /** What limits the limit right now, in one line: capacity (memory, CPU) or quota (pace). Computed from the current readings, the same ones the policy reads. */
-    explain: z.object({ cause: z.enum(["quota-cap", "memory-and-quota", "memory", "quota", "cpu", "turbo", "none"]), line: z.string() }),
+    explain: z.object({ cause: z.enum(["quota-cap", "reserve", "memory-and-quota", "memory", "quota", "cpu", "turbo", "none"]), line: z.string() }),
     /** The readings the last decision used, for the Coach window. Null when nothing is logged yet. */
     detail: z.object({
       applied: z.boolean(),
