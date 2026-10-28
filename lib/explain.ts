@@ -14,7 +14,7 @@ export interface Explanation {
 export interface LimitFlags {
   /** Quota near its cap: the limit is at the minimum. */
   quotaCap: boolean;
-  /** Nate's reserve reached: the limit holds at the minimum. */
+  /** Interactive reserve reached: the limit holds at the minimum. */
   reserve: boolean;
   /** Memory pressure: free memory under its floor, or swap high while paging out. */
   memory: boolean;

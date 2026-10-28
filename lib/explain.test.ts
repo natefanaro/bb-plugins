@@ -84,7 +84,7 @@ test("agrees with decide() across a grid of readings", () => {
     const e = explainLimit(s, false);
     const f = limitFlags(s);
     if (why.startsWith("quota near limit")) assert.equal(e.cause, "quota-cap", why);
-    else if (why.startsWith("Nate's reserve")) assert.equal(e.cause, "reserve", why);
+    else if (why.startsWith("Interactive reserve")) assert.equal(e.cause, "reserve", why);
     else if (why.startsWith("memory pressure")) assert.ok(e.cause === "memory" || e.cause === "memory-and-quota", why);
     else if (why.startsWith("5-hour use ahead") || why.startsWith("weekly use ahead") || why.startsWith("hold: no raise")) assert.equal(e.cause, "quota", why);
     else if (why.startsWith("CPU hot")) assert.equal(e.cause, "cpu", why);
@@ -102,10 +102,10 @@ test("a weekly raise hold is a quota hold only when CPU is idle (a raise was wan
   assert.equal(explainLimit({ ...ahead4, loadRatio: 0.7 }, false).cause, "none");
 });
 
-test("Nate's reserve is named, with the minimum and the urgent lane", () => {
+test("Interactive reserve is named, with the minimum and the urgent lane", () => {
   const e = explainLimit({ ...base, tuning: { ...NO_RESERVE, reserveFiveHour: 60 }, fiveHourUsed: 70, fiveHourElapsed: 50 }, false);
   assert.equal(e.cause, "reserve");
-  assert.match(e.line, /^At the minimum, 1: Nate's reserve: 5 h window 70% used, agents' share is 60%\. Only the urgent lane runs above it\.$/);
+  assert.match(e.line, /^At the minimum, 1: Interactive reserve: 5 h window 70% used, agents' share is 60%\. Only the urgent lane runs above it\.$/);
 });
 test("the explanation and the policy agree on the reserve over a grid", () => {
   for (const fiveHourUsed of [10, 59, 60, 80]) for (const [weekUsed, weekElapsed] of [[20, 40], [30, 40], [31, 40], [60, 80]] as const) {
@@ -113,7 +113,7 @@ test("the explanation and the policy agree on the reserve over a grid", () => {
     assert.equal(decide(s).kind === "reserve", explainLimit(s, false).cause === "reserve", JSON.stringify([fiveHourUsed, weekUsed, weekElapsed]));
   }
 });
-test("Nate's reserve in fleet mode: says every host is at its minimum and the lanes are off", () => {
+test("Interactive reserve in fleet mode: says every host is at its minimum and the lanes are off", () => {
   const e = explainLimit({ ...base, tuning: { ...NO_RESERVE, reserveFiveHour: 60 }, fiveHourUsed: 70, fiveHourElapsed: 50 }, false, true);
   assert.equal(e.cause, "reserve");
   assert.match(e.line, /Fleet mode: every host is at its minimum, and the urgent and opencode lanes are off\.$/);

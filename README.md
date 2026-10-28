@@ -124,9 +124,9 @@ With the `host` setting **blank** and more than one host connected, Coach manage
 - **Turning it on:** `bb plugin config concurrency-coach unset host`. To go back: `bb plugin config concurrency-coach set host <name>`. The host entry must be installed on each machine (a plugin reload does it), and a host that has not loaded it is reported as not stepped.
 - **Rollback:** revert the merge and refresh the install. Fleet state is under separate keys; single-host state is untouched.
 
-## Nate's reserve
+## Interactive reserve
 
-Agents may use only a share of the quota; the rest is the person's own. When agents pass their share, the limit holds at the minimum and only the urgent lane runs above it (the quota cap works the same way, but at 90-92%). The panel and the log say "Nate's reserve" as the reason.
+Agents may use only a share of the quota; the rest is left for the person using the machine. When agents pass their share, the limit holds at the minimum and only the urgent lane runs above it (the quota cap works the same way, but at 90-92%). The panel and the log say "Interactive reserve" as the reason.
 
 - `reserveFiveHour` (default 60, 1 to 100, 0 = off): the most of the 5-hour window, in percent used, that agents may use. At or above it, every host holds at the minimum.
 - `reserveWeek` (default 1, 0 = off) and `reserveWeekMargin` (default 10, 0 to 100): the weekly line is the share of the week elapsed minus the margin. Weekly use at or above that line holds the limit at the minimum. The line never falls below 10% used (`max(10, elapsed - margin)`), so a new week does not freeze at 0% use. The week has no signal in its first 5% (as for the pace rules).

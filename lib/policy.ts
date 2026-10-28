@@ -45,15 +45,15 @@ export function weekProjected(used: number, elapsed: number): number | null {
 export const RESERVE_WEEK_FLOOR = 10;
 
 /**
- * Nate's reserve: the share of the quota agents may use. Above the 5-hour share, or when weekly use is within the margin of (or past) the week's pace line, the limit holds at the minimum.
+ * Interactive reserve: the share of the quota agents may use. Above the 5-hour share, or when weekly use is within the margin of (or past) the week's pace line, the limit holds at the minimum.
  * Null when the reserve is not reached (or its figures are unknown). The week has no signal in its first hours, as in the pace rules.
  */
 export function reserveReason(s: Pick<Signals, "fiveHourUsed" | "weekUsed" | "weekElapsed">, t: Tuning): string | null {
   if (t.reserveFiveHour > 0 && s.fiveHourUsed !== null && s.fiveHourUsed >= t.reserveFiveHour)
-    return `Nate's reserve: 5 h window ${s.fiveHourUsed}% used, agents' share is ${t.reserveFiveHour}%`;
+    return `Interactive reserve: 5 h window ${s.fiveHourUsed}% used, agents' share is ${t.reserveFiveHour}%`;
   if (t.reserveWeek === 1 && s.weekUsed !== null && s.weekElapsed !== null && s.weekElapsed >= WEEK_MIN_ELAPSED) {
     const line = Math.max(RESERVE_WEEK_FLOOR, s.weekElapsed - t.reserveWeekMargin);
-    if (s.weekUsed >= line) return `Nate's reserve: week ${s.weekUsed}% used, agents' share ends at ${line}% (pace ${s.weekElapsed}% minus ${t.reserveWeekMargin} points, at least ${RESERVE_WEEK_FLOOR}%)`;
+    if (s.weekUsed >= line) return `Interactive reserve: week ${s.weekUsed}% used, agents' share ends at ${line}% (pace ${s.weekElapsed}% minus ${t.reserveWeekMargin} points, at least ${RESERVE_WEEK_FLOOR}%)`;
   }
   return null;
 }

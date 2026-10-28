@@ -119,13 +119,13 @@ test("quota near its cap drops every host to its own minimum", async () => {
   assert.deepEqual(by(w.writes, "h_mini"), [1], "the default minimum");
 });
 
-test("Nate's reserve in fleet mode: every host drops to its own minimum, with the lanes off", async () => {
+test("Interactive reserve in fleet mode: every host drops to its own minimum, with the lanes off", async () => {
   const w = setup([MINI(), STUDIO()], { quota: { used: 60, elapsed: 44 }, settings: { hostLimits: "macstudio:3-12", reserveWeek: 1, reserveWeekMargin: 10, opencodeSlots: 1, urgentSlots: 1 } });
   const fleet = await createFleet(w.deps);
   const results = await fleet.round(true);
   assert.deepEqual(by(w.writes, "h_studio"), [3], "the studio's own minimum");
   assert.deepEqual(by(w.writes, "h_mini"), [1], "the default minimum");
-  for (const r of results) { assert.match(r.tick?.why ?? "", /^Nate's reserve: week 60% used/); assert.equal(r.tick?.headroom, 0, "no opencode headroom"); assert.equal(r.tick?.urgentHeadroom, 0, "no urgent headroom"); }
+  for (const r of results) { assert.match(r.tick?.why ?? "", /^Interactive reserve: week 60% used/); assert.equal(r.tick?.headroom, 0, "no opencode headroom"); assert.equal(r.tick?.urgentHeadroom, 0, "no urgent headroom"); }
 });
 
 test("each host is held to its own range from hostLimits: both idle and at their own maximum, nothing is written", async () => {

@@ -25,9 +25,9 @@ export interface Tuning {
   urgentSlots: number;
   /** Minutes urgent work may wait before it is flagged as starved. 0 never flags. */
   urgentReportMinutes: number;
-  /** Nate's reserve: the most of the 5-hour window (percent used) agents may use. At or above it the limit holds at the minimum. 0 turns the 5-hour reserve off. */
+  /** Interactive reserve: the most of the 5-hour window (percent used) agents may use. At or above it the limit holds at the minimum. 0 turns the 5-hour reserve off. */
   reserveFiveHour: number;
-  /** Nate's reserve on the week: 1 on, 0 off. */
+  /** Interactive reserve on the week: 1 on, 0 off. */
   reserveWeek: number;
   /** Points below the week's pace (percent of the week elapsed) that agents' weekly use may reach before the reserve holds the limit at the minimum. */
   reserveWeekMargin: number;
