@@ -2,7 +2,7 @@
   "$schema": "https://getbb.app/schemas/marketplace.schema.json",
   "schemaVersion": 1,
   "name": "bb-plugins",
-  "displayName": "BB Plugins (natefanaro)",
+  "displayName": "BB Plugins",
   "description": "Plugins for bb. Currently: Concurrency Coach.",
   "plugins": [
     {
@@ -11,7 +11,7 @@
       "description": "Raises and lowers the host thread limit every five minutes from CPU load, memory pressure and Claude plan quota pace.",
       "tags": ["concurrency", "quota"],
       "author": {
-        "name": "Nate Fanaro"
+        "name": "bb-plugins contributors"
       },
       "source": {
         "git": {
