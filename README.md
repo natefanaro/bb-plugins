@@ -2,6 +2,18 @@
 
 Raises and lowers the host thread limit every 5 minutes, one step at a time, between a min and max you set. It reads CPU load and Claude plan quota pace. It makes no model calls.
 
+## Install
+
+```sh
+bb marketplace add git:https://github.com/natefanaro/bb-plugins.git
+bb plugin install concurrency-coach@bb-plugins --yes
+```
+
+- Needs bb 0.45 or newer. There are no native modules to compile; the only runtime dependency is `zod`.
+- It is on by default and can change the host limit at its next 5-minute tick. The defaults are a minimum of 2 and a maximum of 8; set your own range first with `bb plugin config concurrency-coach set minLimit 1` and `... set maxLimit 6`.
+- To pause it: `bb plugin config concurrency-coach set enabled false`. To see what it would do without changing anything: `bb concurrency-coach status`.
+- Quota pacing needs the quota reading from the Claude provider usage; without it, Coach scales on CPU alone. Memory readings use macOS tools (`memory_pressure`, `sysctl`, `vm_stat`); a reading that fails is ignored.
+
 ## How it works
 
 Every 5 minutes it reads two signals and applies one of these rules:
